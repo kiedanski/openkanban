@@ -183,6 +183,8 @@ func resetTicketNewFlags() {
 	ticketNewCreatedBy = ""
 	ticketNewWorktree = false
 	ticketNewJSON = false
+	ticketNewBlockedBy = ""
+	ticketNewWorktreeFrom = ""
 }
 
 // requireLsof skips when lsof isn't installed. The daemon-owns matrix
