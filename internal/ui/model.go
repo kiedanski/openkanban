@@ -3973,6 +3973,13 @@ func (m *Model) promoteAndSpawnUnattached() (tea.Model, tea.Cmd) {
 		m.notify("Project not found for this ticket")
 		return m, nil
 	}
+	// Worktree-exclusivity safety gate: refuse to start a second live agent in
+	// a worktree another ticket already occupies (create a fresh worktree or
+	// wait). See worktree_gate.go / workflow.WorktreeConflict.
+	if occ := m.worktreeOccupiedByOther(ticket); occ != nil {
+		m.notify("Worktree busy: \"" + occ.Title + "\" is live here — use a new worktree or wait")
+		return m, nil
+	}
 	if !ticket.UseWorktree {
 		for otherID := range m.panes {
 			if otherID == ticket.ID {
@@ -4610,6 +4617,14 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 	proj := m.globalStore.GetProjectForTicket(ticket)
 	if proj == nil {
 		m.notify("Project not found for this ticket")
+		return m, nil
+	}
+
+	// Worktree-exclusivity safety gate: refuse to start a second live agent in
+	// a worktree another ticket already occupies (create a fresh worktree or
+	// wait). See worktree_gate.go / workflow.WorktreeConflict.
+	if occ := m.worktreeOccupiedByOther(ticket); occ != nil {
+		m.notify("Worktree busy: \"" + occ.Title + "\" is live here — use a new worktree or wait")
 		return m, nil
 	}
 
