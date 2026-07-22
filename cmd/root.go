@@ -12,6 +12,7 @@ import (
 	"github.com/techdufus/openkanban/internal/app"
 	"github.com/techdufus/openkanban/internal/config"
 	"github.com/techdufus/openkanban/internal/finishskill"
+	"github.com/techdufus/openkanban/internal/ticketskills"
 )
 
 var (
@@ -68,6 +69,9 @@ for safe parallel development.`,
 		if home, herr := os.UserHomeDir(); herr == nil && home != "" {
 			if _, serr := finishskill.EnsureInstalled(home); serr != nil {
 				fmt.Fprintf(os.Stderr, "openkanban: could not install close-out skill: %v\n", serr)
+			}
+			if _, serr := ticketskills.EnsureInstalled(home); serr != nil {
+				fmt.Fprintf(os.Stderr, "openkanban: could not install ticket-graph skills: %v\n", serr)
 			}
 			warnMissingAgentsIfNeeded(finishskill.RequiredAgents(), agentResolver(home), isTTY, os.Stderr)
 		}
