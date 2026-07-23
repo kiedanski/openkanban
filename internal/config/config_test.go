@@ -476,6 +476,89 @@ func TestGetEffectiveInitPrompt(t *testing.T) {
 			t.Error("GetEffectiveInitPrompt should return non-empty default for unknown agent")
 		}
 	})
+
+	t.Run("agent init_prompt_file overrides inline init_prompt", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "prompt.md")
+		if err := os.WriteFile(f, []byte("from linked file"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Agents["claude"] = AgentConfig{
+			Command:        "claude",
+			InitPrompt:     "inline should lose",
+			InitPromptFile: f,
+		}
+		if got := cfg.GetEffectiveInitPrompt("claude"); got != "from linked file" {
+			t.Errorf("got %q; want linked-file contents", got)
+		}
+	})
+
+	t.Run("defaults init_prompt_file used when agent has neither", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "global.md")
+		if err := os.WriteFile(f, []byte("global file prompt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Agents["custom"] = AgentConfig{Command: "custom"} // no inline, no file
+		cfg.Defaults.InitPromptFile = f
+		if got := cfg.GetEffectiveInitPrompt("custom"); got != "global file prompt" {
+			t.Errorf("got %q; want global-file contents", got)
+		}
+	})
+
+	t.Run("missing file falls through to inline init_prompt", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Agents["claude"] = AgentConfig{
+			Command:        "claude",
+			InitPrompt:     "inline fallback",
+			InitPromptFile: filepath.Join(t.TempDir(), "does-not-exist.md"),
+		}
+		if got := cfg.GetEffectiveInitPrompt("claude"); got != "inline fallback" {
+			t.Errorf("got %q; want inline fallback on unreadable file", got)
+		}
+	})
+
+	t.Run("blank file falls through to inline init_prompt", func(t *testing.T) {
+		f := filepath.Join(t.TempDir(), "blank.md")
+		if err := os.WriteFile(f, []byte("   \n\t\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Agents["claude"] = AgentConfig{
+			Command:        "claude",
+			InitPrompt:     "inline fallback",
+			InitPromptFile: f,
+		}
+		if got := cfg.GetEffectiveInitPrompt("claude"); got != "inline fallback" {
+			t.Errorf("got %q; want inline fallback on blank file", got)
+		}
+	})
+
+	t.Run("relative init_prompt_file resolves against config dir", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("OPENKANBAN_CONFIG_DIR", dir)
+		if err := os.WriteFile(filepath.Join(dir, "p.md"), []byte("rel file prompt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Agents["claude"] = AgentConfig{Command: "claude", InitPromptFile: "p.md"}
+		if got := cfg.GetEffectiveInitPrompt("claude"); got != "rel file prompt" {
+			t.Errorf("got %q; want relative-path file contents", got)
+		}
+	})
+
+	t.Run("leading ~ in init_prompt_file expands to home", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if err := os.WriteFile(filepath.Join(home, "myprompt.md"), []byte("home file prompt"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := DefaultConfig()
+		cfg.Agents["claude"] = AgentConfig{Command: "claude", InitPromptFile: "~/myprompt.md"}
+		if got := cfg.GetEffectiveInitPrompt("claude"); got != "home file prompt" {
+			t.Errorf("got %q; want ~-expanded file contents", got)
+		}
+	})
 }
 
 func TestMergeAgentDefaults(t *testing.T) {

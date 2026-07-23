@@ -990,6 +990,36 @@ func TestClaudePrimingPrefixes_MatchTemplate(t *testing.T) {
 	})
 }
 
+// TestShippedTemplate_NoUnportablePriming guards the fix for the recurring
+// "Unknown skill: /prime" failure: the shipped default template must not mandate
+// a personal priming skill (/prime) nor leak a maintainer-specific memory path.
+// Both branches (fresh spawn + external resume) are rendered and scanned. If a
+// future edit reintroduces either, this fails. (text/template strips {{/* */}}
+// comments, so the header-comment's mention of /prime never reaches output.)
+func TestShippedTemplate_NoUnportablePriming(t *testing.T) {
+	tmpl := config.DefaultAgentPrompt()
+	base := ContextData{
+		Title:        "fixture",
+		BranchName:   "task/fixture",
+		BaseBranch:   "main",
+		Status:       "in_progress",
+		WorktreePath: "/tmp/fixture",
+		HasBrief:     true,
+		BriefPath:    "tickets/fixture.md",
+	}
+	for _, resume := range []bool{false, true} {
+		data := base
+		data.IsExternalResume = resume
+		got := BuildContextPrompt(tmpl, data)
+		if strings.Contains(got, "/prime") {
+			t.Errorf("rendered template (resume=%v) still mandates /prime:\n%s", resume, got)
+		}
+		if strings.Contains(got, "-Users-cmeid") {
+			t.Errorf("rendered template (resume=%v) leaks a maintainer-specific memory path:\n%s", resume, got)
+		}
+	}
+}
+
 func TestProjectDirFor(t *testing.T) {
 	home := withFakeHome(t)
 	projects := filepath.Join(home, ".claude", "projects")

@@ -104,6 +104,62 @@ func TestProjectEditForm_SavesAgentsAndPin(t *testing.T) {
 	}
 }
 
+// TestProjectEditForm_SavesInitPromptFile pins the new prompt-file path field:
+// editing the agent's `prompt:` field must persist InitPromptFile into
+// config.Agents while preserving the agent's existing (embedded) InitPrompt.
+func TestProjectEditForm_SavesInitPromptFile(t *testing.T) {
+	t.Setenv("OPENKANBAN_CONFIG_DIR", t.TempDir())
+
+	cfg := config.DefaultConfig()
+	proj := project.NewProject("PromptProj", t.TempDir())
+	reg := &project.ProjectRegistry{Projects: map[string]*project.Project{proj.ID: proj}}
+	gs := project.NewGlobalTicketStore(nil)
+	gs.AddProject(proj)
+
+	cols := board.DefaultColumns()
+	m := &Model{
+		config:          cfg,
+		projectRegistry: reg,
+		globalStore:     gs,
+		columns:         cols,
+		columnTickets:   make([][]*board.Ticket, len(cols)),
+		columnOffsets:   make([]int, len(cols)),
+		width:           120,
+		height:          40,
+	}
+	m.editProject(proj)
+
+	idx := -1
+	for i, r := range m.peAgents {
+		if r.key == "claude" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatal("claude not present in editor rows")
+	}
+	// The default claude agent ships the embedded template in init_prompt;
+	// capture it to assert the file-link edit doesn't clobber it.
+	wantInitPrompt := m.peAgents[idx].initPrompt
+	if wantInitPrompt == "" {
+		t.Fatal("expected claude agent to carry a non-empty embedded init_prompt")
+	}
+
+	base := peAgentBaseField + idx*peFieldsPerAgent
+	editTextField(m, base+peSubInitPromptFile, "~/prompts/claude.md")
+
+	m.saveProjectEditForm()
+
+	got := m.config.Agents["claude"]
+	if got.InitPromptFile != "~/prompts/claude.md" {
+		t.Errorf("InitPromptFile not saved: got %q", got.InitPromptFile)
+	}
+	if got.InitPrompt != wantInitPrompt {
+		t.Errorf("InitPrompt not preserved through save: got %q want %q", got.InitPrompt, wantInitPrompt)
+	}
+}
+
 // TestProjectEditForm_SavesModel verifies that saveProjectEditForm persists
 // proj.Settings.Model to disk and mirrors it onto the live store pointer.
 // Also asserts that leading/trailing whitespace is trimmed.

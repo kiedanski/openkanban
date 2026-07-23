@@ -166,6 +166,10 @@ type BoardSettings struct {
 	BranchTemplate   string `json:"branch_template"` // e.g., "{prefix}{slug}"
 	SlugMaxLength    int    `json:"slug_max_length"` // default: 40
 	InitPrompt       string `json:"init_prompt"`
+	// InitPromptFile is the global-default counterpart of AgentConfig.InitPromptFile:
+	// a path to a file whose contents become the init-prompt template when no
+	// per-agent prompt applies. See GetEffectiveInitPrompt for precedence.
+	InitPromptFile string `json:"init_prompt_file,omitempty"`
 }
 
 // AgentConfig defines how to spawn and monitor an AI agent
@@ -180,6 +184,12 @@ type AgentConfig struct {
 	Env        map[string]string `json:"env"`
 	StatusFile string            `json:"status_file"`
 	InitPrompt string            `json:"init_prompt"`
+	// InitPromptFile links a file whose contents become the init-prompt
+	// template, so a long custom starting prompt lives in a file instead of
+	// inline JSON. When set and readable it takes precedence over InitPrompt.
+	// A leading "~/" expands to the user's home; a relative path resolves
+	// against ConfigDir(). Unreadable/empty → falls through (see readPromptFile).
+	InitPromptFile string `json:"init_prompt_file,omitempty"`
 }
 
 // IsEnabled reports whether this agent should be offered for selection. An
@@ -541,14 +551,68 @@ func (c *Config) mergeAgentDefaults() {
 	}
 }
 
+// GetEffectiveInitPrompt resolves the init-prompt template for an agent.
+// Precedence (first hit wins): agent InitPromptFile → agent InitPrompt →
+// defaults InitPromptFile → defaults InitPrompt → the built-in
+// defaultGlobalPrompt. The file check MUST precede the inline check at each
+// level: default agents ship the embedded template in InitPrompt (always
+// non-empty), so a link would never take effect if inline were checked first.
 func (c *Config) GetEffectiveInitPrompt(agentType string) string {
-	if agentCfg, ok := c.Agents[agentType]; ok && agentCfg.InitPrompt != "" {
-		return agentCfg.InitPrompt
+	if agentCfg, ok := c.Agents[agentType]; ok {
+		if s, ok := readPromptFile(agentCfg.InitPromptFile); ok {
+			return s
+		}
+		if agentCfg.InitPrompt != "" {
+			return agentCfg.InitPrompt
+		}
+	}
+	if s, ok := readPromptFile(c.Defaults.InitPromptFile); ok {
+		return s
 	}
 	if c.Defaults.InitPrompt != "" {
 		return c.Defaults.InitPrompt
 	}
 	return defaultGlobalPrompt
+}
+
+// readPromptFile resolves a configured init_prompt_file path and returns its
+// contents. An empty path yields ("", false) with no I/O. A leading "~/"
+// expands to the user's home; a relative path resolves against ConfigDir() so
+// links stay portable across machines. On any read error it logs to stderr and
+// returns ("", false) so the caller falls through to the next prompt tier
+// (non-fatal, matching the spawn-path error convention). A file that exists but
+// is blank/whitespace also yields ("", false) — an empty link must not blank
+// out the prompt the agent receives.
+func readPromptFile(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", false
+	}
+	resolved := path
+	if strings.HasPrefix(resolved, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			resolved = filepath.Join(home, resolved[2:])
+		}
+	}
+	if !filepath.IsAbs(resolved) {
+		if dir, err := ConfigDir(); err == nil {
+			resolved = filepath.Join(dir, resolved)
+		}
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		// A missing linked file is the documented fail-open case — a prompt file
+		// that only exists on some machines — so don't spam stderr on every spawn
+		// for it. Surface only the surprising errors (permissions, is-a-directory).
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "openkanban: init_prompt_file %q unreadable: %v\n", resolved, err)
+		}
+		return "", false
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", false
+	}
+	return string(data), true
 }
 
 func (c *Config) GetTheme() Theme {
