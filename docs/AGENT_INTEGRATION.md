@@ -596,13 +596,23 @@ case agentStatusMsg:
 
 ### Prompt Priority
 
-1. Agent-specific `init_prompt` in config
-2. Global `defaults.init_prompt` in config
-3. Built-in default prompt — embedded from [`internal/config/agent_prompt.tmpl`](../internal/config/agent_prompt.tmpl) via `//go:embed`. Edit the markdown file, not a Go string constant. On `Load`, `mergeAgentDefaults` restores the embedded default when a user's `init_prompt` field is empty or absent, so clearing the override falls through to the binary's shipped content (not to the much shorter generic `defaultGlobalPrompt`).
+`GetEffectiveInitPrompt(agentType)` resolves the starting prompt, first hit wins:
+
+1. Agent-specific `init_prompt_file` — a path to a file whose contents become the template (when set **and** readable)
+2. Agent-specific `init_prompt` — inline template string
+3. Global `defaults.init_prompt_file` — file contents (when set and readable)
+4. Global `defaults.init_prompt` — inline template string
+5. Built-in default prompt — embedded from [`internal/config/agent_prompt.tmpl`](../internal/config/agent_prompt.tmpl) via `//go:embed`. Edit the markdown file, not a Go string constant. On `Load`, `mergeAgentDefaults` restores the embedded default when a user's `init_prompt` field is empty or absent, so clearing the override falls through to the binary's shipped content (not to the much shorter generic `defaultGlobalPrompt`).
+
+**Why `init_prompt_file` before `init_prompt` at each level:** default agents ship the embedded template *in* `init_prompt` (always non-empty), so a link would never take effect if inline were checked first. The file check therefore precedes the inline check.
+
+**Path resolution & fail-open** (`readPromptFile`): a leading `~/` expands to the user's home; a relative path resolves against `ConfigDir()` so links stay portable. An unreadable path or a blank/whitespace-only file is **non-fatal** — it logs to stderr and falls through to the next tier, so a bad link never blanks out the prompt or blocks a spawn. This is the ergonomic way to keep a long custom starting prompt (e.g. one that opens with a personal `/prime`-style context command) in a file instead of pasting it into `config.json`. It's editable in the in-app project/agent editor (`e`) as the agent's `prompt:` field.
 
 ### Design intent of the shipped template
 
 The embedded `agent_prompt.tmpl` is deliberately **generic about cross-cutting workflow discipline**. It points at categories of help — "code-review, validation, cross-stack risk subagents", "adversarial / multi-role doc reviewer" — without naming specific agents, plugins, or skills that may not be installed in the spawned environment. Personal subagent loadouts and named-agent guidance belong in the user's own `~/.claude/CLAUDE.md`, which the template explicitly defers to. When extending the template, prefer naming a role over naming a tool; if you want to name a specific agent, the right home is your global CLAUDE.md.
+
+This rule is why the shipped template no longer hard-mandates a `/prime` context-priming skill as its first action: `/prime` is a *personal* skill, not present in every spawned environment, so the mandated first action failed with "Unknown skill: prime" wherever it was absent. The template now opens with a generic "orient yourself; the project CLAUDE.md is already loaded" instruction that always succeeds. A user who wants a `/prime`-style preamble (or any other custom starting prompt) links their own file via `init_prompt_file` — see "Prompt Priority" above — keeping personal, non-portable priming out of the shipped default.
 
 The one deliberate exception is the **`finishing-an-openkanban-ticket`** skill, which the template names for the close-out. That skill is openkanban-owned (vendored at [`internal/finishskill/SKILL.md`](../internal/finishskill/SKILL.md) and written into `~/.claude/skills/` on launch — see "Standardized close-out" below), so it is guaranteed present in any openkanban-spawned session. The template's wrap-up section delegates the entire end-of-ticket flow to it: verify → self-evaluate readiness → one enumerated permission prompt → land via commit → PR → merge → reflective wind-down. The template itself stays generic and prose-affirmative (it describes *what* the close-out does, not a list of `NEVER` rules) so it doesn't restate the user's global push-gate.
 

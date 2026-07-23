@@ -94,7 +94,10 @@ Each agent supports:
 - `env` — environment variables injected into the agent's process. A leading `~/` in a value is expanded to your home directory.
 - `label` — display name shown in the sidebar and status toasts (defaults to the config key).
 - `status_file` — where the agent writes status, relative to the worktree.
-- `init_prompt` — a per-agent prompt template override.
+- `init_prompt` — a per-agent prompt template override (inline string).
+- `init_prompt_file` — a path to a file whose contents become the prompt template, so a long custom starting prompt lives in a file instead of inline JSON. When set and readable it takes precedence over `init_prompt`. A leading `~/` expands to your home; a relative path resolves against the config directory. An unreadable or blank file is ignored (it falls through to `init_prompt`, then the built-in default), so a bad link never blanks the prompt or blocks a spawn. Editable in the project/agent editor (`e`) as the agent's `prompt:` field. Both `init_prompt` and `init_prompt_file` also exist under `defaults` as a global fallback when no per-agent value applies.
+
+The shipped default prompt is intentionally generic and does **not** invoke any personal skill (e.g. `/prime`) — that would fail with "Unknown skill" wherever the skill isn't installed. To open every session with your own priming command or preamble, put it in a file and point `init_prompt_file` at it.
 
 Argument wrapping and status detection are keyed off `command`, so an agent whose `command` is `claude` is treated as Claude regardless of its config key.
 
@@ -159,7 +162,7 @@ Set it in the project editor (`e`), **Briefs** field: press `←`/`→` to toggl
 
 ### Editing agents in the TUI (`e`)
 
-Focus a project in the sidebar and press **`e`** for a unified editor that edits **both** the project (name + pinned agent + model → `projects.json`) **and** the shared agent registry (→ `config.json`) in one screen. Per agent you can edit the **label, command, args, and env** (e.g. point `claude-custom`'s `CLAUDE_CONFIG_DIR` at a different directory) and set its **enabled** state. `Tab`/`↑`/`↓` move between fields, `←`/`→` toggle selectors (the pin and each agent's enabled state), `Ctrl+S` saves, `Esc` cancels. (`g` remains a quick one-press cycle of just the pin.)
+Focus a project in the sidebar and press **`e`** for a unified editor that edits **both** the project (name + pinned agent + model → `projects.json`) **and** the shared agent registry (→ `config.json`) in one screen. Per agent you can edit the **label, command, args, env, and prompt-file** (the `prompt:` field — a path to an `init_prompt_file`, e.g. point `claude-custom`'s `CLAUDE_CONFIG_DIR` at a different directory, or link a custom starting prompt) and set its **enabled** state. `Tab`/`↑`/`↓` move between fields, `←`/`→` toggle selectors (the pin and each agent's enabled state), `Ctrl+S` saves, `Esc` cancels. (`g` remains a quick one-press cycle of just the pin.)
 
 ### Enabling / disabling agents
 

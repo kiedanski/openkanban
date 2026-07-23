@@ -15,22 +15,23 @@ import (
 
 // ModeEditProject (the `e` key on a focused sidebar project) is a unified
 // editor for BOTH project details (name + pinned agent → projects.json) and the
-// SHARED agent registry (enable/disable, label, command, args, env →
-// config.json). Editing two config files in one screen is intentional — it
+// SHARED agent registry (enable/disable, label, command, args, env, prompt-file
+// → config.json). Editing two config files in one screen is intentional — it
 // keeps the TUI simple. The per-project bits persist via registry.Update; the
 // agent bits via config.Save.
 
 // peAgentRow is the working copy of one agent while the editor is open. Edits
 // stay here until Ctrl+S writes them back to m.config.Agents.
 type peAgentRow struct {
-	key        string
-	label      string
-	command    string
-	args       string // space-joined
-	env        string // "K=V, K=V" (keys sorted for stable display)
-	enabled    string // "auto" | "on" | "off"
-	statusFile string // preserved verbatim
-	initPrompt string // preserved verbatim
+	key            string
+	label          string
+	command        string
+	args           string // space-joined
+	env            string // "K=V, K=V" (keys sorted for stable display)
+	enabled        string // "auto" | "on" | "off"
+	statusFile     string // preserved verbatim
+	initPrompt     string // preserved verbatim
+	initPromptFile string // editable: path to a file whose contents become the init prompt
 }
 
 // Flat field layout for the editor cursor (m.peField):
@@ -40,19 +41,20 @@ type peAgentRow struct {
 //	2                                        = project model override (text)
 //	3                                        = ignore ticket briefs (selector: land/ignore)
 //	peAgentBaseField + i*peFieldsPerAgent + sub = agent i's fields
-//	    sub: 0 enabled(sel) 1 label 2 command 3 args 4 env
-const peFieldsPerAgent = 5
+//	    sub: 0 enabled(sel) 1 label 2 command 3 args 4 env 5 prompt-file
+const peFieldsPerAgent = 6
 
 // peAgentBaseField is the flat field index where agent rows begin.
 // Inserting a new project-level field above bumps this; update in one place.
 const peAgentBaseField = 4
 
 const (
-	peSubEnabled = 0
-	peSubLabel   = 1
-	peSubCommand = 2
-	peSubArgs    = 3
-	peSubEnv     = 4
+	peSubEnabled        = 0
+	peSubLabel          = 1
+	peSubCommand        = 2
+	peSubArgs           = 3
+	peSubEnv            = 4
+	peSubInitPromptFile = 5
 )
 
 func (m *Model) peFieldCount() int { return peAgentBaseField + len(m.peAgents)*peFieldsPerAgent }
@@ -124,14 +126,15 @@ func (m *Model) buildPeAgents() []peAgentRow {
 		}
 		seen[key] = true
 		rows = append(rows, peAgentRow{
-			key:        key,
-			label:      cfg.Label,
-			command:    cfg.Command,
-			args:       strings.Join(cfg.Args, " "),
-			env:        peJoinEnv(cfg.Env),
-			enabled:    peEnabledStr(cfg.Enabled),
-			statusFile: cfg.StatusFile,
-			initPrompt: cfg.InitPrompt,
+			key:            key,
+			label:          cfg.Label,
+			command:        cfg.Command,
+			args:           strings.Join(cfg.Args, " "),
+			env:            peJoinEnv(cfg.Env),
+			enabled:        peEnabledStr(cfg.Enabled),
+			statusFile:     cfg.StatusFile,
+			initPrompt:     cfg.InitPrompt,
+			initPromptFile: cfg.InitPromptFile,
 		})
 	}
 	for _, key := range config.AgentPriority {
@@ -190,6 +193,8 @@ func (m *Model) peSyncToField() {
 		m.peAgents[idx].args = val
 	case peSubEnv:
 		m.peAgents[idx].env = val
+	case peSubInitPromptFile:
+		m.peAgents[idx].initPromptFile = val
 	}
 }
 
@@ -215,6 +220,8 @@ func (m *Model) peTextValue(field int) string {
 		return r.args
 	case peSubEnv:
 		return r.env
+	case peSubInitPromptFile:
+		return r.initPromptFile
 	}
 	return ""
 }
@@ -344,13 +351,14 @@ func (m *Model) saveProjectEditForm() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.config.Agents[r.key] = config.AgentConfig{
-			Label:      strings.TrimSpace(r.label),
-			Command:    cmd,
-			Args:       strings.Fields(r.args),
-			Enabled:    peEnabledPtr(r.enabled),
-			Env:        peParseEnv(r.env),
-			StatusFile: r.statusFile,
-			InitPrompt: r.initPrompt,
+			Label:          strings.TrimSpace(r.label),
+			Command:        cmd,
+			Args:           strings.Fields(r.args),
+			Enabled:        peEnabledPtr(r.enabled),
+			Env:            peParseEnv(r.env),
+			StatusFile:     r.statusFile,
+			InitPrompt:     r.initPrompt, // preserved verbatim (not an editable field)
+			InitPromptFile: strings.TrimSpace(r.initPromptFile),
 		}
 	}
 	if err := m.config.Save(""); err != nil {
@@ -516,6 +524,7 @@ func (m *Model) renderProjectEditForm() string {
 		b = append(b, cursor(base+peSubCommand)+lbl(base+peSubCommand, "  command: ")+textOrValue(base+peSubCommand))
 		b = append(b, cursor(base+peSubArgs)+lbl(base+peSubArgs, "  args:    ")+textOrValue(base+peSubArgs))
 		b = append(b, cursor(base+peSubEnv)+lbl(base+peSubEnv, "  env:     ")+textOrValue(base+peSubEnv))
+		b = append(b, cursor(base+peSubInitPromptFile)+lbl(base+peSubInitPromptFile, "  prompt:  ")+textOrValue(base+peSubInitPromptFile)+dimStyle.Render("  file path → init prompt (~ / rel to config dir)"))
 	}
 
 	b = append(b, "")
@@ -553,7 +562,8 @@ func (m *Model) renderProjectEditForm() string {
 // rows above the agents add a fixed offset).
 func (m *Model) peFocusedLine() int {
 	// Layout: 0=title, 1=blank, 2="Project", 3=name(0), 4=agent(1), 5=model(2),
-	// 6=briefs(3), 7=blank, 8="Agents", 9=hint, then agents start at 10 (5 lines each).
+	// 6=briefs(3), 7=blank, 8="Agents", 9=hint, then agents start at 10
+	// (peFieldsPerAgent lines each — one rendered row per sub-field).
 	if m.peField == 0 {
 		return 3
 	}

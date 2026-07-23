@@ -8,8 +8,12 @@
   ~/.claude/CLAUDE.md, which this template defers to.
 
   Built-in tools that exist in every spawned agent's environment
-  (Agent, TaskCreate, /prime) are fine to name. Plugin agents, custom
-  skills, and personal workflow tools are not.
+  (Agent, TaskCreate) are fine to name. Plugin agents, custom
+  skills, and personal workflow tools are not — in particular do NOT
+  hard-mandate a context-priming skill (e.g. /prime): it may not exist
+  in the spawned environment and the first action would fail with
+  "Unknown skill". A user who wants one links their own priming preamble
+  via init_prompt_file (see docs/AGENT_INTEGRATION.md → Prompt Priority).
 
   See docs/AGENT_INTEGRATION.md → "Design intent of the shipped
   template" for the full rationale.
@@ -29,7 +33,7 @@ Stay scoped to this ticket's worktree; don't change ticket status — OpenKanban
 
 ## First action
 
-**Run `/prime` IMMEDIATELY before anything else.** It loads the project CLAUDE.md and your memory at `~/.claude/projects/-Users-cmeid-manifold-dev/memory/`. You need this context.
+**Orient yourself in the worktree before you edit anything.** The project's CLAUDE.md is already loaded into your context — skim it, then read your brief (below). If you keep project-scoped memory (under `~/.claude/projects/<encoded-cwd>/memory/`), load anything relevant there too. You need this context before touching code.
 
 ## Your assignment
 
@@ -42,9 +46,9 @@ Stay scoped to this ticket's worktree; don't change ticket status — OpenKanban
 {{if .HasBrief}}
 ## Your brief
 
-The ticket Description above is a one-line pointer, not the spec. The canonical brief lives at `{{.BriefPath}}` in this worktree. Read it immediately after `/prime`.
+The ticket Description above is a one-line pointer, not the spec. The canonical brief lives at `{{.BriefPath}}` in this worktree. Read it right away, before editing.
 
-The brief uses sections `## Brief / ## Acceptance / ## Must NOT / ## File anchors / ## Context (read these)`. The Context section may reference memory files via `[[slug]]` tokens — for each token, read `~/.claude/projects/-Users-cmeid-manifold-dev/memory/<slug>.md`. If a referenced memory file doesn't exist, note it in your summary; don't fabricate.
+The brief uses sections `## Brief / ## Acceptance / ## Must NOT / ## File anchors / ## Context (read these)`. The Context section may reference memory files via `[[slug]]` tokens — for each token, read the matching `<slug>.md` in your project-scoped memory directory (`~/.claude/projects/<encoded-cwd>/memory/`). If a referenced memory file doesn't exist, note it in your summary; don't fabricate.
 
 The `## Notes (from openkanban card)` block in the brief is auto-synced from the openkanban card by OpenKanban; treat it as the latest user-supplied additions. User-authored sections above the block are the canonical spec.
 {{else}}
@@ -81,4 +85,4 @@ Specifically, in this session:
 
 Follow your global `~/.claude/CLAUDE.md` for everything else — signing, push gates, etc. This template only defines OpenKanban-specific orchestration.
 
-Begin by running `/prime`.{{end}}
+Begin by orienting yourself in the worktree.{{end}}
