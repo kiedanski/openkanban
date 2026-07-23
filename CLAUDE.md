@@ -33,6 +33,25 @@ commit:**
 (Sessions already running inside a ticket worktree are isolated — this doesn't
 apply to you; carry on.)
 
+## ⚠️ Remotes: `origin` must be your fork
+
+openkanban treats the remote named **`origin`** as authoritative and has no
+per-project setting to override it:
+
+- New-ticket worktrees are cut from whatever `origin/HEAD` points to —
+  `GetDefaultBranch()` runs `git symbolic-ref refs/remotes/origin/HEAD`
+  (`internal/git/worktree.go`), falling back to local `main`/`master`.
+- `openkanban update` self-updates by pulling `origin main`
+  (`cmd/update.go`).
+
+So in a fork-based clone, **`origin` must be the fork you develop and merge on**
+(here `git@github.com:kiedanski/openkanban.git`), and the upstream you forked
+from is kept as **`upstream`** (here `https://github.com/cmeid/openkanban.git`).
+If `origin` points at upstream instead, every new ticket is cut from upstream
+and the binary self-updates from upstream — so features you merged into your
+fork never show up in new tickets. If you re-clone or re-add remotes, restore
+this arrangement (and `git remote set-head origin -a`) before creating tickets.
+
 ## Stack
 
 Go 1.21+, BubbleTea (TUI), creack/pty, charmbracelet/x/vt (terminal emulation; see [Terminal Emulator](docs/AGENT_INTEGRATION.md#architecture-terminal-emulator))
