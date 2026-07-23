@@ -21,6 +21,7 @@ import (
 	"github.com/techdufus/openkanban/internal/git"
 	"github.com/techdufus/openkanban/internal/project"
 	"github.com/techdufus/openkanban/internal/ticketsvc"
+	"github.com/techdufus/openkanban/internal/workflow"
 )
 
 var (
@@ -29,6 +30,7 @@ var (
 	ticketNewDescription     string
 	ticketNewDescriptionFile string
 	ticketNewStatus          string
+	ticketNewType            string
 	ticketNewLabels          string
 	ticketNewPriority        int
 	ticketNewNoWorktree      bool
@@ -39,6 +41,8 @@ var (
 	ticketNewMigrate         bool
 	ticketNewForce           bool
 	ticketNewCreatedBy       string
+	ticketNewBlockedBy       string
+	ticketNewWorktreeFrom    string
 
 	ticketDeleteProject string
 	ticketDeleteID      string
@@ -91,9 +95,6 @@ Description sources (mutually exclusive, in priority order):
 		if title == "" {
 			return fmt.Errorf("--title must not be empty")
 		}
-		if ticketNewProject == "" {
-			return fmt.Errorf("--project is required")
-		}
 		if ticketNewPriority < 0 || ticketNewPriority > 5 {
 			return fmt.Errorf("--priority must be 0-5 (0 = use default)")
 		}
@@ -105,13 +106,38 @@ Description sources (mutually exclusive, in priority order):
 		if ticketNewWorktree && ticketNewNoWorktree {
 			return fmt.Errorf("--worktree and --no-worktree are contradictory")
 		}
+		if ticketNewWorktreeFrom != "" {
+			if ticketNewWorktree {
+				return fmt.Errorf("--worktree-from adopts an existing worktree; it is contradictory with --worktree (which creates a new one)")
+			}
+			if ticketNewNoWorktree {
+				return fmt.Errorf("--worktree-from and --no-worktree are contradictory")
+			}
+		}
 
 		registry, err := project.LoadRegistry()
 		if err != nil {
 			return fmt.Errorf("load project registry: %w", err)
 		}
 
-		proj, err := resolveProject(registry, ticketNewProject)
+		// Resolve the project. When --project is omitted but we're running
+		// inside an openkanban-spawned session ($OPENKANBAN_TICKET_ID set),
+		// derive it from the current ticket so an agent can create sibling
+		// tickets without knowing the project name/id (the spin-off/fan-out
+		// skills rely on this). Human invocations still require --project.
+		projectRef := ticketNewProject
+		if projectRef == "" {
+			if envTID := os.Getenv("OPENKANBAN_TICKET_ID"); envTID != "" {
+				if src, _, found := findTicketAcrossProjects(registry, board.TicketID(envTID)); found {
+					projectRef = src.ProjectID
+				}
+			}
+		}
+		if projectRef == "" {
+			return fmt.Errorf("--project is required (or run inside an openkanban session so it is derived from $OPENKANBAN_TICKET_ID)")
+		}
+
+		proj, err := resolveProject(registry, projectRef)
 		if err != nil {
 			return err
 		}
@@ -158,6 +184,21 @@ Description sources (mutually exclusive, in priority order):
 		if ticketNewNoWorktree {
 			ticket.UseWorktree = false
 		}
+		if ticketNewType != "" {
+			tt, terr := board.ParseTicketType(ticketNewType)
+			if terr != nil {
+				return fmt.Errorf("--type %s", terr)
+			}
+			ticket.Type = tt
+		}
+		// Worktree policy by type: research/spec are read-only report stages,
+		// so they default to no-worktree (run in the main repo, no branch
+		// churn) unless the user explicitly asked for one. An explicit
+		// --worktree / --worktree-from / --no-worktree always wins.
+		if (ticket.Type == board.TypeResearch || ticket.Type == board.TypeSpec) &&
+			!ticketNewWorktree && !ticketNewNoWorktree && ticketNewWorktreeFrom == "" {
+			ticket.UseWorktree = false
+		}
 
 		// Build the global store BEFORE applySessionFlags so LinkSession
 		// can scan all tickets across all projects for the uniqueness
@@ -170,6 +211,60 @@ Description sources (mutually exclusive, in priority order):
 
 		if err := applySessionFlags(ticket, globalStore); err != nil {
 			return err
+		}
+
+		// --blocked-by: record dependency links (this ticket depends on the
+		// named tickets). Each id is validated across all projects so a typo
+		// fails loudly rather than dangling. The links are informational at
+		// the data layer today; workflow gates consume them separately.
+		if ticketNewBlockedBy != "" {
+			for _, raw := range strings.Split(ticketNewBlockedBy, ",") {
+				dep := strings.TrimSpace(raw)
+				if dep == "" {
+					continue
+				}
+				if board.TicketID(dep) == ticket.ID {
+					return fmt.Errorf("--blocked-by: a ticket cannot block itself")
+				}
+				if _, _, found := findTicketAcrossProjects(registry, board.TicketID(dep)); !found {
+					return fmt.Errorf("--blocked-by: ticket %q not found in any project", dep)
+				}
+				ticket.BlockedBy = append(ticket.BlockedBy, board.TicketID(dep))
+			}
+		}
+
+		// Workflow prerequisite gate. STARTING a typed ticket (--status
+		// in_progress) with an unmet upstream is blocked unless --force;
+		// merely CREATING one in a resting column is a non-blocking warning —
+		// hard-block on start, warn on create. Runs after --blocked-by so the
+		// gate sees the links.
+		if perr := workflow.CheckPrerequisite(ticket, ticketGraphLookup{registry}); perr != nil {
+			if ticket.Status == board.StatusInProgress && !ticketNewForce {
+				return perr
+			}
+			fmt.Fprintf(os.Stderr, "openkanban: warning: %v\n", perr)
+		}
+
+		// --worktree-from: adopt an existing ticket's worktree + branch instead
+		// of provisioning a new one, so a spin-off can continue a feature in
+		// place. This only RECORDS the shared location; the worktree-exclusivity
+		// safety gate (enforced at spawn) prevents two live agents from editing
+		// it at once. Mutually exclusive with --worktree / --no-worktree above.
+		if ticketNewWorktreeFrom != "" {
+			src, _, found := findTicketAcrossProjects(registry, board.TicketID(ticketNewWorktreeFrom))
+			if !found {
+				return fmt.Errorf("--worktree-from: ticket %q not found", ticketNewWorktreeFrom)
+			}
+			if src.ProjectID != proj.ID {
+				return fmt.Errorf("--worktree-from: ticket %q belongs to a different project", ticketNewWorktreeFrom)
+			}
+			if src.WorktreePath == "" {
+				return fmt.Errorf("--worktree-from: ticket %q has no worktree to reuse", ticketNewWorktreeFrom)
+			}
+			ticket.UseWorktree = true
+			ticket.WorktreePath = src.WorktreePath
+			ticket.BranchName = src.BranchName
+			ticket.BaseBranch = src.BaseBranch
 		}
 
 		// Opt-in worktree provisioning (sibling ticket 954ed3e8). Done
@@ -219,15 +314,21 @@ Description sources (mutually exclusive, in priority order):
 		}
 		path := filepath.Join(ticketsRoot, proj.ID, project.TicketFilename(ticket))
 
+		blockedBy := make([]string, 0, len(ticket.BlockedBy))
+		for _, id := range ticket.BlockedBy {
+			blockedBy = append(blockedBy, string(id))
+		}
 		result := ticketNewResult{
 			ID:           string(ticket.ID),
 			Path:         path,
 			Slug:         board.Slugify(ticket.Title, 40),
 			Status:       string(ticket.Status),
+			Type:         string(ticket.Type),
 			ProjectID:    proj.ID,
 			WorktreePath: ticket.WorktreePath,
 			BranchName:   ticket.BranchName,
 			BaseBranch:   ticket.BaseBranch,
+			BlockedBy:    blockedBy,
 		}
 		if ticketNewJSON {
 			enc, jerr := json.MarshalIndent(result, "", "  ")
@@ -258,10 +359,14 @@ type ticketNewResult struct {
 	Path         string `json:"path"`
 	Slug         string `json:"slug"`
 	Status       string `json:"status"`
+	Type         string `json:"type"`
 	ProjectID    string `json:"project_id"`
 	WorktreePath string `json:"worktree_path"`
 	BranchName   string `json:"branch_name"`
 	BaseBranch   string `json:"base_branch"`
+	// BlockedBy is always present (empty slice, never null) so consumers can
+	// range over it unconditionally.
+	BlockedBy []string `json:"blocked_by"`
 }
 
 var ticketDeleteCmd = &cobra.Command{
@@ -836,6 +941,8 @@ func init() {
 		"Initial status: backlog (default), next, in_progress, in_review, done, archived")
 	ticketNewCmd.Flags().StringVar(&ticketNewLabels, "labels", "",
 		"Comma-separated labels")
+	ticketNewCmd.Flags().StringVar(&ticketNewType, "type", "",
+		"Pipeline type: research, spec, implement, review (empty = freeform). Binds a specialized agent role at spawn; implement/review START is gated on a linked upstream")
 	ticketNewCmd.Flags().IntVar(&ticketNewPriority, "priority", 0,
 		"Priority 1-5 (0 = use default, which is 3)")
 	ticketNewCmd.Flags().BoolVar(&ticketNewNoWorktree, "no-worktree", false,
@@ -843,7 +950,7 @@ func init() {
 	ticketNewCmd.Flags().BoolVar(&ticketNewWorktree, "worktree", false,
 		"Provision the git worktree + branch now (not lazily at spawn) and print its path; contradicts --no-worktree")
 	ticketNewCmd.Flags().BoolVar(&ticketNewJSON, "json", false,
-		"Emit a JSON object {id, path, slug, status, project_id, worktree_path, branch_name, base_branch} instead of plain lines")
+		"Emit a JSON object {id, path, slug, status, type, project_id, worktree_path, branch_name, base_branch, blocked_by} instead of plain lines")
 	ticketNewCmd.Flags().BoolVar(&ticketNewAllowMigration, "allow-migration", false,
 		"Allow migrating legacy single-file ticket storage instead of refusing")
 	ticketNewCmd.Flags().StringVar(&ticketNewSession, "session", "",
@@ -854,8 +961,14 @@ func init() {
 		"With --migrate: kill the process currently holding the session JSONL (SIGTERM, 3s grace, SIGKILL). Unsubmitted prompts in that session are lost")
 	ticketNewCmd.Flags().StringVar(&ticketNewCreatedBy, "created-by", "",
 		"Free-form name of the session that created this ticket (audit/provenance only)")
+	ticketNewCmd.Flags().StringVar(&ticketNewBlockedBy, "blocked-by", "",
+		"Comma-separated ticket IDs this ticket depends on (records dependency links; each id must exist)")
+	ticketNewCmd.Flags().StringVar(&ticketNewWorktreeFrom, "worktree-from", "",
+		"Reuse the worktree+branch of an existing ticket (same project) instead of creating a new one; contradicts --worktree/--no-worktree")
 
-	_ = ticketNewCmd.MarkFlagRequired("project")
+	// --project is intentionally NOT MarkFlagRequired: when omitted inside an
+	// openkanban session it is derived from $OPENKANBAN_TICKET_ID (see RunE).
+	// The RunE guard still errors when it can be neither supplied nor derived.
 	_ = ticketNewCmd.MarkFlagRequired("title")
 
 	rootCmd.AddCommand(ticketCmd)

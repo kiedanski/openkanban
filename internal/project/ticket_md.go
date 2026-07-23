@@ -39,15 +39,25 @@ var validAgentStatuses = map[board.AgentStatus]bool{
 	board.AgentError:     true,
 }
 
-// validAgentTypes are the agent flavours the spawn flow knows.
-// Empty is allowed (legacy / unset).
+// validAgentTypes are the agent flavours the spawn flow knows — every value
+// that may be stamped onto ticket.AgentType and survive a reload must be
+// listed, or UnmarshalTicket hard-errors the whole ticket. This includes the
+// shipped Claude presets (claude-custom, claude-lean) and the pipeline role
+// agents (claude-research/spec/review, bound by ticket Type via
+// config.RoleForType) — all are persisted as the config key, not the base
+// command. Empty is allowed (legacy / unset).
 var validAgentTypes = map[string]bool{
-	"":         true,
-	"claude":   true,
-	"opencode": true,
-	"aider":    true,
-	"gemini":   true,
-	"codex":    true,
+	"":                true,
+	"claude":          true,
+	"claude-custom":   true,
+	"claude-lean":     true,
+	"claude-research": true,
+	"claude-spec":     true,
+	"claude-review":   true,
+	"opencode":        true,
+	"aider":           true,
+	"gemini":          true,
+	"codex":           true,
 }
 
 const (
@@ -66,6 +76,7 @@ type ticketFrontmatter struct {
 	ProjectID string             `yaml:"project_id"`
 	Title     string             `yaml:"title"`
 	Status    board.TicketStatus `yaml:"status"`
+	Type      board.TicketType   `yaml:"type,omitempty"`
 	Priority  int                `yaml:"priority"`
 	Labels    []string           `yaml:"labels"`
 
@@ -111,6 +122,7 @@ func toFrontmatter(t *board.Ticket) ticketFrontmatter {
 		ProjectID:        t.ProjectID,
 		Title:            t.Title,
 		Status:           t.Status,
+		Type:             t.Type,
 		Priority:         t.Priority,
 		Labels:           labels,
 		CreatedAt:        t.CreatedAt,
@@ -160,6 +172,7 @@ func fromFrontmatter(fm ticketFrontmatter, body string) *board.Ticket {
 		Title:            fm.Title,
 		Description:      body,
 		Status:           fm.Status,
+		Type:             fm.Type,
 		UseWorktree:      fm.UseWorktree,
 		WorktreePath:     fm.WorktreePath,
 		BranchName:       fm.BranchName,
@@ -285,6 +298,13 @@ func validateFrontmatter(fm *ticketFrontmatter) error {
 
 	if !validAgentTypes[fm.AgentType] {
 		return fmt.Errorf("invalid agent_type %q (allowed: claude, opencode, aider, gemini, codex, or empty)", fm.AgentType)
+	}
+
+	// Type: empty parses as freeform (backward-compat with pre-Type files);
+	// a present-but-unknown value is a hand-edit typo and hard-errors.
+	// board.ParseTicketType is the single source of truth for the allowlist.
+	if _, err := board.ParseTicketType(string(fm.Type)); err != nil {
+		return fmt.Errorf("invalid type: %w", err)
 	}
 
 	now := time.Now()

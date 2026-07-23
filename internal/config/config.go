@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/techdufus/openkanban/internal/board"
 )
 
 const defaultGlobalPrompt = `You have been spawned by OpenKanban to work on a ticket.
@@ -57,6 +59,62 @@ Description:
 Branch: {{.BranchName}} (from {{.BaseBranch}})
 
 This is your assigned task. Implement what the description specifies.`
+
+// Role headers are prepended to defaultAgentPrompt for the pipeline task
+// types (research/spec/implement/review). Layering rather than duplicating
+// the ~80-line shared briefing keeps /prime, brief-reading, ticket
+// discipline, and the finishing-skill close-out in one place, while giving
+// each spawned agent a stage-specific mission — the differentiator the
+// board's type→role binding depends on. `implement` uses the plain
+// defaultAgentPrompt (it IS the default coding role). See board.TicketType
+// and RoleForType.
+const researchRoleHeader = "## Role: Research (explore & report)\n\n" +
+	"You are the **research** stage of the research → spec → implement → review\n" +
+	"pipeline. EXPLORE and REPORT — do not change the system.\n\n" +
+	"- Produce a findings document (write `findings.md` at the repo root): what you\n" +
+	"  found, with file:line evidence; open questions; and a recommendation.\n" +
+	"- DO NOT modify code and DO NOT write an implementation plan — the spec stage\n" +
+	"  owns the plan. Stay in plan mode.\n" +
+	"- Work read-only: research doesn't commit code. A downstream spec ticket will\n" +
+	"  consume your findings.\n\n---\n\n"
+
+const specRoleHeader = "## Role: Spec (plan the work)\n\n" +
+	"You are the **spec** stage of the research → spec → implement → review\n" +
+	"pipeline. Produce a PLAN — do not implement.\n\n" +
+	"- Write a plan document (`plan.md` at the repo root): ordered steps, the exact\n" +
+	"  files to touch, risks/edge cases, and a test strategy.\n" +
+	"- DO NOT modify code beyond the plan file. Stay in plan mode.\n" +
+	"- Consume any upstream `findings.md`. A downstream implement ticket, gated on\n" +
+	"  this spec being done, will consume your `plan.md`.\n\n---\n\n"
+
+const reviewRoleHeader = "## Role: Review (critique the diff)\n\n" +
+	"You are the **review** stage of the research → spec → implement → review\n" +
+	"pipeline. CRITIQUE the implementation — do not re-implement it.\n\n" +
+	"- Read the diff against the base branch and produce a review document\n" +
+	"  (`review.md` at the repo root): correctness, risks, test gaps, and clear\n" +
+	"  verdicts. Fix only trivial nits inline.\n" +
+	"- The upstream implement ticket (linked via BlockedBy) carries the branch/diff\n" +
+	"  you are reviewing.\n\n---\n\n"
+
+// RoleForType maps a ticket's pipeline Type to the agent config key that
+// should spawn for it. TypeImplement maps to the plain "claude" default
+// coding role; TypeFreeform (and any unknown value) returns "" so the spawn
+// path falls through to the project's configured default agent — preserving
+// today's behavior for untyped tickets.
+func RoleForType(t board.TicketType) string {
+	switch t {
+	case board.TypeResearch:
+		return "claude-research"
+	case board.TypeSpec:
+		return "claude-spec"
+	case board.TypeImplement:
+		return "claude"
+	case board.TypeReview:
+		return "claude-review"
+	default:
+		return ""
+	}
+}
 
 // AgentPriority defines the order in which agents are preferred when auto-detecting.
 // The first available agent in this list becomes the default.
@@ -219,6 +277,37 @@ func defaultAgents() map[string]AgentConfig {
 			},
 			StatusFile: ".claude/status.json",
 			InitPrompt: defaultLeanAgentPrompt,
+		},
+		// Pipeline role agents. All Command:"claude" so they inherit every
+		// Claude-class spawn behavior (plan mode, prompt-suggestion disable)
+		// through buildSpawnReq's basename switch — no model.go change needed.
+		// They differ from the default "claude" only by InitPrompt (a
+		// stage-specific role header layered on the shared briefing). Bound to
+		// a ticket by its Type via RoleForType; not in AgentPriority, so they
+		// never become a project's auto-detected default.
+		"claude-research": {
+			Label:      "Claude (Research)",
+			Command:    "claude",
+			Args:       []string{"--dangerously-skip-permissions"},
+			Env:        map[string]string{},
+			StatusFile: ".claude/status.json",
+			InitPrompt: researchRoleHeader + defaultAgentPrompt,
+		},
+		"claude-spec": {
+			Label:      "Claude (Spec)",
+			Command:    "claude",
+			Args:       []string{"--dangerously-skip-permissions"},
+			Env:        map[string]string{},
+			StatusFile: ".claude/status.json",
+			InitPrompt: specRoleHeader + defaultAgentPrompt,
+		},
+		"claude-review": {
+			Label:      "Claude (Review)",
+			Command:    "claude",
+			Args:       []string{"--dangerously-skip-permissions"},
+			Env:        map[string]string{},
+			StatusFile: ".claude/status.json",
+			InitPrompt: reviewRoleHeader + defaultAgentPrompt,
 		},
 		"opencode": {
 			Label:      "OpenCode",

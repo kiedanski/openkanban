@@ -303,10 +303,21 @@ chosen **per project, and nowhere else**. The mechanism:
   it (falls back to all if none qualify). A disabled agent a project is pinned to
   still spawns — disabled only hides it from selection.
 - Every spawn site resolves through `Model.resolveSpawnAgent(ticket, proj)`:
-  `ticket.AgentType` (resume continuity) → `proj.Settings.DefaultAgent` →
+  `ticket.AgentType` (resume continuity) → `config.RoleForType(ticket.Type)`
+  (pipeline role, if the ticket is typed) → `proj.Settings.DefaultAgent` →
   `errNoProjectAgent`. There is **no** fallback to `config.Defaults.DefaultAgent`.
-  An unpinned project refuses to spawn — that's the guard against accidentally
-  launching the wrong Claude.
+  An unpinned, untyped project refuses to spawn — that's the guard against
+  accidentally launching the wrong Claude. The type→role step is the ONE
+  sanctioned per-ticket agent override (the "task types → agent roles"
+  feature): a `research`/`spec`/`implement`/`review` ticket binds
+  `claude-research`/`claude-spec`/`claude`/`claude-review`. Those role presets
+  ship with an empty `Env`, so they run the DEFAULT claude profile and differ
+  only by `InitPrompt` — a typed ticket in a custom-profile-pinned project
+  runs the role on the default profile (composing role InitPrompt with a
+  pinned profile's `Env` is a v2 follow-up). The create-form **Type** picker
+  is distinct from the (deliberately absent) agent picker; do not add an agent
+  picker — `TestNoGlobalDefaultAgentInSpawnPath` still guards the
+  `Defaults.DefaultAgent` path.
 - Behavior (arg wrapping at `buildSpawnReq`'s `switch`, daemon status) keys off
   `agentCfg.Command` (basename), not the config map key. So two presets with
   `command: "claude"` (e.g. `claude` + `claude-custom`) both get Claude

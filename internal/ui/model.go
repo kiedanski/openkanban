@@ -29,6 +29,7 @@ import (
 	"github.com/techdufus/openkanban/internal/terminal"
 	"github.com/techdufus/openkanban/internal/ticketsvc"
 	"github.com/techdufus/openkanban/internal/update"
+	"github.com/techdufus/openkanban/internal/workflow"
 )
 
 const agentPortBase = 4097
@@ -149,9 +150,29 @@ const (
 	formFieldBranch      = 3
 	formFieldLabels      = 4
 	formFieldPriority    = 5
-	formFieldWorktree    = 6
-	formFieldBlockedBy   = 7
+	formFieldType        = 6
+	formFieldWorktree    = 7
+	formFieldBlockedBy   = 8
 )
+
+// ticketTypeOptions is the ordered set the create/edit form's Type picker
+// cycles through (freeform first = today's default). Shared by handleTypeNav
+// and renderTypeSelector so the order stays in one place.
+var ticketTypeOptions = []board.TicketType{
+	board.TypeFreeform,
+	board.TypeResearch,
+	board.TypeSpec,
+	board.TypeImplement,
+	board.TypeReview,
+}
+
+// defaultWorktreeForType returns the sensible UseWorktree default for a type:
+// research/spec are read-only report stages (no worktree, no branch churn);
+// implement/review/freeform get a worktree. The form applies this when the
+// Type picker changes, and the user can still flip the Worktree field after.
+func defaultWorktreeForType(t board.TicketType) bool {
+	return t != board.TypeResearch && t != board.TypeSpec
+}
 
 type choiceItem struct {
 	Key   rune
@@ -247,6 +268,12 @@ type Model struct {
 	choiceMsg  string
 	choices    []choiceItem
 
+	// gateOverrides records tickets for which the user chose "override &
+	// start" at the workflow prerequisite offer (see startGateAllows). The
+	// entry is consumed on the next spawn attempt so the override applies
+	// exactly once, then the gate re-arms.
+	gateOverrides map[board.TicketID]bool
+
 	// stuckActionPrompt gates the stuck-session recover/destroy modal.
 	// Shown via this bool while m.mode stays ModeNormal (the exit-guard
 	// / showChoice overlay pattern); routed in handleKey's global arms
@@ -260,6 +287,7 @@ type Model struct {
 	branchInput        textinput.Model
 	labelsInput        textinput.Model
 	ticketPriority     int
+	ticketType         board.TicketType
 	ticketUseWorktree  bool
 	projectInput       textinput.Model
 	ticketFormField    int
@@ -2527,6 +2555,8 @@ func (m *Model) handleTicketForm(msg tea.KeyMsg, isEdit bool) (tea.Model, tea.Cm
 		m.labelsInput, cmd = m.labelsInput.Update(msg)
 	case formFieldPriority:
 		cmd = m.handlePriorityNav(msg)
+	case formFieldType:
+		cmd = m.handleTypeNav(msg)
 	case formFieldWorktree:
 		cmd = m.handleWorktreeToggle(msg)
 	case formFieldBlockedBy:
@@ -2556,6 +2586,30 @@ func (m *Model) handlePriorityNav(msg tea.KeyMsg) tea.Cmd {
 	case "1", "2", "3", "4", "5":
 		m.ticketPriority = int(msg.String()[0] - '0')
 	}
+	return nil
+}
+
+// handleTypeNav cycles the create/edit form's Type picker through
+// ticketTypeOptions with the same j/k/arrow gestures as the priority selector.
+// Changing the type also resets the Worktree default for that type
+// (research/spec → no worktree); the user can still flip the Worktree field
+// afterward since it renders right below.
+func (m *Model) handleTypeNav(msg tea.KeyMsg) tea.Cmd {
+	idx := 0
+	for i, t := range ticketTypeOptions {
+		if t == m.ticketType {
+			idx = i
+			break
+		}
+	}
+	switch msg.String() {
+	case "j", "down", "l", "right":
+		idx = (idx + 1) % len(ticketTypeOptions)
+	case "k", "up", "h", "left":
+		idx = (idx - 1 + len(ticketTypeOptions)) % len(ticketTypeOptions)
+	}
+	m.ticketType = ticketTypeOptions[idx]
+	m.ticketUseWorktree = defaultWorktreeForType(m.ticketType)
 	return nil
 }
 
@@ -2854,6 +2908,8 @@ func (m *Model) focusCurrentField() {
 		m.labelsInput.Focus()
 	case formFieldPriority:
 		break
+	case formFieldType:
+		break
 	case formFieldWorktree:
 		break
 	case formFieldBlockedBy:
@@ -2906,6 +2962,7 @@ func (m *Model) saveTicketForm(isEdit bool) (tea.Model, tea.Cmd) {
 			}
 			ticket.Labels = labels
 			ticket.Priority = m.ticketPriority
+			ticket.Type = m.ticketType
 			ticket.UseWorktree = m.ticketUseWorktree
 			ticket.BlockedBy = blockedBy
 			ticket.Touch()
@@ -2923,6 +2980,7 @@ func (m *Model) saveTicketForm(isEdit bool) (tea.Model, tea.Cmd) {
 		ticket.BranchName = branchName
 		ticket.Labels = labels
 		ticket.Priority = m.ticketPriority
+		ticket.Type = m.ticketType
 		ticket.UseWorktree = m.ticketUseWorktree
 		ticket.BlockedBy = blockedBy
 		// in_review and done are "outbound" columns — landing a brand new
@@ -3526,6 +3584,7 @@ func (m *Model) createNewTicket() (tea.Model, tea.Cmd) {
 	m.branchInput.Reset()
 	m.labelsInput.Reset()
 	m.ticketPriority = 3
+	m.ticketType = board.TypeFreeform
 	m.ticketUseWorktree = true
 
 	m.initBlockerCandidates("")
@@ -3573,6 +3632,7 @@ func (m *Model) editTicket() (tea.Model, tea.Cmd) {
 	if m.ticketPriority < 1 || m.ticketPriority > 5 {
 		m.ticketPriority = 3
 	}
+	m.ticketType = ticket.Type
 	m.ticketUseWorktree = ticket.UseWorktree
 
 	m.initBlockerCandidates(ticket.ID)
@@ -3973,6 +4033,13 @@ func (m *Model) promoteAndSpawnUnattached() (tea.Model, tea.Cmd) {
 		m.notify("Project not found for this ticket")
 		return m, nil
 	}
+	// Worktree-exclusivity safety gate: refuse to start a second live agent in
+	// a worktree another ticket already occupies (create a fresh worktree or
+	// wait). See worktree_gate.go / workflow.WorktreeConflict.
+	if occ := m.worktreeOccupiedByOther(ticket); occ != nil {
+		m.notify("Worktree busy: \"" + occ.Title + "\" is live here — use a new worktree or wait")
+		return m, nil
+	}
 	if !ticket.UseWorktree {
 		for otherID := range m.panes {
 			if otherID == ticket.ID {
@@ -4000,6 +4067,13 @@ func (m *Model) promoteAndSpawnUnattached() (tea.Model, tea.Cmd) {
 	}
 	if agentType == "opencode" {
 		_ = m.opencodeServer.Start() // best effort
+	}
+
+	// Workflow prerequisite offer (overridable): refuse to START an
+	// implement/review whose upstream isn't ready, before the promotion Move
+	// and spawn. Sits after the worktree-exclusivity SAFETY gate above.
+	if !m.startGateAllows(ticket, m.promoteAndSpawnUnattached) {
+		return m, nil
 	}
 
 	// Promote into in_progress from any column (no-op when already there).
@@ -4613,6 +4687,14 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Worktree-exclusivity safety gate: refuse to start a second live agent in
+	// a worktree another ticket already occupies (create a fresh worktree or
+	// wait). See worktree_gate.go / workflow.WorktreeConflict.
+	if occ := m.worktreeOccupiedByOther(ticket); occ != nil {
+		m.notify("Worktree busy: \"" + occ.Title + "\" is live here — use a new worktree or wait")
+		return m, nil
+	}
+
 	if !ticket.UseWorktree {
 		for otherID := range m.panes {
 			if otherID == ticket.ID {
@@ -4637,6 +4719,13 @@ func (m *Model) spawnAgent() (tea.Model, tea.Cmd) {
 	agentCfg, ok := m.config.Agents[agentType]
 	if !ok {
 		m.notify("Agent '" + agentType + "' not configured")
+		return m, nil
+	}
+
+	// Workflow prerequisite offer (overridable): refuse to START an
+	// implement/review whose upstream isn't ready. Sits after the
+	// worktree-exclusivity SAFETY gate above, before the spawn.
+	if !m.startGateAllows(ticket, m.spawnAgent) {
 		return m, nil
 	}
 
@@ -4845,18 +4934,77 @@ const noProjectAgentMsg = "Pin a Claude for this project first — press g in th
 // errNoProjectAgent signals a spawn was attempted in a project with no pinned agent.
 var errNoProjectAgent = errors.New("no project agent pinned")
 
-// resolveSpawnAgent returns the agent key to spawn for a ticket. A ticket that
-// already carries an AgentType keeps it (resume continuity); otherwise the
-// project's pinned DefaultAgent is authoritative. An unpinned project returns
+// resolveSpawnAgent returns the agent key to spawn for a ticket. Resolution
+// order: (1) an AgentType already on the ticket wins (resume continuity —
+// never re-role a live session); (2) a pipeline Type binds its specialized
+// role via config.RoleForType (research/spec/implement/review); (3) the
+// project's pinned DefaultAgent. An unpinned, untyped project returns
 // errNoProjectAgent and the caller must refuse the spawn (no global fallback).
+//
+// The role agents (claude-research/spec/review) ship with an empty Env, so
+// they launch the DEFAULT claude profile — they differ from the project pin
+// only by InitPrompt, not by CLAUDE_CONFIG_DIR. A typed ticket in a project
+// pinned to a custom profile (e.g. claude-lean) therefore runs the role on the
+// default profile; composing role InitPrompt with a pinned profile's Env is a
+// deliberate v2 follow-up, not v1.
 func (m *Model) resolveSpawnAgent(ticket *board.Ticket, proj *project.Project) (string, error) {
 	if ticket != nil && ticket.AgentType != "" {
 		return ticket.AgentType, nil
+	}
+	if ticket != nil {
+		if role := config.RoleForType(ticket.Type); role != "" {
+			return role, nil
+		}
 	}
 	if proj != nil && proj.Settings.DefaultAgent != "" {
 		return proj.Settings.DefaultAgent, nil
 	}
 	return "", errNoProjectAgent
+}
+
+// startGateAllows reports whether `ticket` may START now under the workflow
+// prerequisite PRACTICE gate (an implement needs a done spec; a review needs an
+// implement in in_review+). It returns true — proceed — when the gate passes,
+// when the ticket is already associated with a session (a resume is never
+// re-gated), or when the user previously chose "override & start" (consumed
+// once here). When the gate blocks, it arms a choice OFFER — override / cancel
+// — and returns false so the caller halts; `retry` is the spawn entry re-run if
+// the user overrides. Unlike the WorktreeConflict SAFETY gate this is always
+// overridable, matching the CLI's --force. The pure decision lives in
+// workflow.CheckPrerequisite; m.globalStore satisfies its TicketLookup.
+//
+// "Already started" covers BOTH resume paths (see the two-resume taxonomy in
+// spawnAgent): a TUI-native spawn stamps AgentSpawnedAt, while an external
+// resume (`ticket new --session …`) carries an AgentSessionID with
+// AgentSpawnedAt still nil. Either means work already exists behind the ticket,
+// so the gate — which is about STARTING fresh work — must not fire.
+func (m *Model) startGateAllows(ticket *board.Ticket, retry func() (tea.Model, tea.Cmd)) bool {
+	if ticket == nil || ticket.AgentSpawnedAt != nil || ticket.AgentSessionID != "" {
+		return true
+	}
+	if m.gateOverrides[ticket.ID] {
+		delete(m.gateOverrides, ticket.ID)
+		return true
+	}
+	err := workflow.CheckPrerequisite(ticket, m.globalStore)
+	if err == nil {
+		return true
+	}
+	id := ticket.ID
+	m.showChoice = true
+	m.choiceMsg = "Can't start this " + string(ticket.Type) + " ticket yet — " + err.Error()
+	m.choices = []choiceItem{
+		{Key: 'o', Label: "Override & start anyway", Fn: func() tea.Cmd {
+			if m.gateOverrides == nil {
+				m.gateOverrides = map[board.TicketID]bool{}
+			}
+			m.gateOverrides[id] = true
+			_, cmd := retry()
+			return cmd
+		}},
+		{Key: 'c', Label: "Cancel — create the upstream ticket first", Fn: func() tea.Cmd { return nil }},
+	}
+	return false
 }
 
 // expandLeadingTilde expands a leading "~/" in an env value to the user's
