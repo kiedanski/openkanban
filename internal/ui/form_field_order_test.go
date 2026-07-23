@@ -40,6 +40,7 @@ func TestFormFieldTabOrder(t *testing.T) {
 		formFieldBranch,
 		formFieldLabels,
 		formFieldPriority,
+		formFieldType,
 		formFieldWorktree,
 		formFieldBlockedBy,
 	}

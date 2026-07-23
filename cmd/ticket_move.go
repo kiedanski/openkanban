@@ -91,6 +91,16 @@ not by the agent itself.`,
 			return err
 		}
 
+		// Workflow prerequisite gate: an implement/review ticket can't START
+		// (move to in_progress) until its upstream is ready — an implement
+		// needs a done spec, a review needs an implement in in_review+. This
+		// is an advisory PRACTICE gate, always overridable with --force.
+		if target == board.StatusInProgress {
+			if err := checkStartPrerequisite(registry, ticket, ticketMoveForce); err != nil {
+				return err
+			}
+		}
+
 		current := ticket.Status
 
 		promoted, pruned, err := store.Move(ticket.ID, target)

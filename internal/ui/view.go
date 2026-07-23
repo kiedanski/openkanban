@@ -638,6 +638,9 @@ func (m *Model) renderTicket(ticket *board.Ticket, isSelected, isHovered bool, w
 	}
 
 	var statusParts []string
+	if badge := m.renderTypeBadge(ticket.Type); badge != "" {
+		statusParts = append(statusParts, badge)
+	}
 	if ticket.AgentType != "" {
 		agentBadge := lipgloss.NewStyle().
 			Foreground(m.colors.base).
@@ -1501,6 +1504,7 @@ func (m *Model) renderTicketForm() string {
 	branchLabel := labelStyle
 	labelsLabel := labelStyle
 	priorityLabel := labelStyle
+	typeLabel := labelStyle
 	worktreeLabel := labelStyle
 	blockerLabel := labelStyle
 	projectLabel := labelStyle
@@ -1519,6 +1523,8 @@ func (m *Model) renderTicketForm() string {
 		labelsLabel = activeLabelStyle
 	case formFieldPriority:
 		priorityLabel = activeLabelStyle
+	case formFieldType:
+		typeLabel = activeLabelStyle
 	case formFieldWorktree:
 		worktreeLabel = activeLabelStyle
 	case formFieldBlockedBy:
@@ -1539,6 +1545,7 @@ func (m *Model) renderTicketForm() string {
 	}
 
 	priorityField := m.renderPrioritySelector()
+	typeField := m.renderTypeSelector()
 	worktreeField := m.renderWorktreeSelector()
 	blockerField := m.renderBlockerSelector()
 	projectField := m.renderProjectSelector()
@@ -1555,7 +1562,7 @@ func (m *Model) renderTicketForm() string {
 	focusIndicator := lipgloss.NewStyle().Foreground(m.colors.info).Render("▸ ")
 	noFocus := "  "
 
-	titleFocus, descFocus, branchFocus, labelsFocus, priorityFocus, worktreeFocus, blockerFocus, projectFocus := noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus
+	titleFocus, descFocus, branchFocus, labelsFocus, priorityFocus, typeFocus, worktreeFocus, blockerFocus, projectFocus := noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus, noFocus
 	switch m.ticketFormField {
 	case formFieldTitle:
 		titleFocus = focusIndicator
@@ -1567,6 +1574,8 @@ func (m *Model) renderTicketForm() string {
 		labelsFocus = focusIndicator
 	case formFieldPriority:
 		priorityFocus = focusIndicator
+	case formFieldType:
+		typeFocus = focusIndicator
 	case formFieldWorktree:
 		worktreeFocus = focusIndicator
 	case formFieldBlockedBy:
@@ -1630,6 +1639,14 @@ func (m *Model) renderTicketForm() string {
 	lines = append(lines, "  "+priorityField)
 	lines = append(lines, "")
 	fieldEndLines[formFieldPriority] = len(lines) - 1
+	currentLine = len(lines)
+
+	fieldStartLines[formFieldType] = currentLine
+	lines = append(lines, typeFocus+typeLabel.Render("Type"))
+	lines = append(lines, "  "+descriptionStyle.Render("Pipeline stage — binds an agent role; implement/review are gated"))
+	lines = append(lines, "  "+typeField)
+	lines = append(lines, "")
+	fieldEndLines[formFieldType] = len(lines) - 1
 	currentLine = len(lines)
 
 	fieldStartLines[formFieldWorktree] = currentLine
@@ -1770,6 +1787,63 @@ func (m *Model) renderPrioritySelector() string {
 	}
 
 	return strings.Join(parts, "  ") + hint
+}
+
+func (m *Model) renderTypeSelector() string {
+	types := []struct {
+		typ   board.TicketType
+		label string
+		color lipgloss.Color
+	}{
+		{board.TypeFreeform, "Freeform", m.colors.muted},
+		{board.TypeResearch, "Research", m.colors.info},
+		{board.TypeSpec, "Spec", m.colors.secondary},
+		{board.TypeImplement, "Implement", m.colors.warning},
+		{board.TypeReview, "Review", m.colors.success},
+	}
+
+	var parts []string
+	for _, t := range types {
+		style := lipgloss.NewStyle().Foreground(t.color)
+		if m.ticketType == t.typ {
+			style = style.Bold(true).Background(m.colors.surface).Padding(0, 1)
+			parts = append(parts, style.Render("● "+t.label))
+		} else {
+			parts = append(parts, style.Render("○ "+t.label))
+		}
+	}
+
+	hint := ""
+	if m.ticketFormField == formFieldType {
+		hint = "  " + m.dimStyle().Render("← → to change")
+	}
+
+	return strings.Join(parts, "  ") + hint
+}
+
+// renderTypeBadge returns a small colored pill naming a ticket's pipeline type,
+// or "" for freeform (untyped cards stay uncluttered). A text label rather than
+// an emoji icon, to avoid wide-rune width miscounts in the column layout.
+func (m *Model) renderTypeBadge(t board.TicketType) string {
+	var label string
+	var bg lipgloss.Color
+	switch t {
+	case board.TypeResearch:
+		label, bg = "research", m.colors.info
+	case board.TypeSpec:
+		label, bg = "spec", m.colors.secondary
+	case board.TypeImplement:
+		label, bg = "implement", m.colors.warning
+	case board.TypeReview:
+		label, bg = "review", m.colors.success
+	default:
+		return ""
+	}
+	return lipgloss.NewStyle().
+		Foreground(m.colors.base).
+		Background(bg).
+		Padding(0, 1).
+		Render(label)
 }
 
 func (m *Model) renderWorktreeSelector() string {

@@ -21,6 +21,7 @@ import (
 	"github.com/techdufus/openkanban/internal/git"
 	"github.com/techdufus/openkanban/internal/project"
 	"github.com/techdufus/openkanban/internal/ticketsvc"
+	"github.com/techdufus/openkanban/internal/workflow"
 )
 
 var (
@@ -29,6 +30,7 @@ var (
 	ticketNewDescription     string
 	ticketNewDescriptionFile string
 	ticketNewStatus          string
+	ticketNewType            string
 	ticketNewLabels          string
 	ticketNewPriority        int
 	ticketNewNoWorktree      bool
@@ -182,6 +184,21 @@ Description sources (mutually exclusive, in priority order):
 		if ticketNewNoWorktree {
 			ticket.UseWorktree = false
 		}
+		if ticketNewType != "" {
+			tt, terr := board.ParseTicketType(ticketNewType)
+			if terr != nil {
+				return fmt.Errorf("--type %s", terr)
+			}
+			ticket.Type = tt
+		}
+		// Worktree policy by type: research/spec are read-only report stages,
+		// so they default to no-worktree (run in the main repo, no branch
+		// churn) unless the user explicitly asked for one. An explicit
+		// --worktree / --worktree-from / --no-worktree always wins.
+		if (ticket.Type == board.TypeResearch || ticket.Type == board.TypeSpec) &&
+			!ticketNewWorktree && !ticketNewNoWorktree && ticketNewWorktreeFrom == "" {
+			ticket.UseWorktree = false
+		}
 
 		// Build the global store BEFORE applySessionFlags so LinkSession
 		// can scan all tickets across all projects for the uniqueness
@@ -214,6 +231,18 @@ Description sources (mutually exclusive, in priority order):
 				}
 				ticket.BlockedBy = append(ticket.BlockedBy, board.TicketID(dep))
 			}
+		}
+
+		// Workflow prerequisite gate. STARTING a typed ticket (--status
+		// in_progress) with an unmet upstream is blocked unless --force;
+		// merely CREATING one in a resting column is a non-blocking warning —
+		// hard-block on start, warn on create. Runs after --blocked-by so the
+		// gate sees the links.
+		if perr := workflow.CheckPrerequisite(ticket, ticketGraphLookup{registry}); perr != nil {
+			if ticket.Status == board.StatusInProgress && !ticketNewForce {
+				return perr
+			}
+			fmt.Fprintf(os.Stderr, "openkanban: warning: %v\n", perr)
 		}
 
 		// --worktree-from: adopt an existing ticket's worktree + branch instead
@@ -294,6 +323,7 @@ Description sources (mutually exclusive, in priority order):
 			Path:         path,
 			Slug:         board.Slugify(ticket.Title, 40),
 			Status:       string(ticket.Status),
+			Type:         string(ticket.Type),
 			ProjectID:    proj.ID,
 			WorktreePath: ticket.WorktreePath,
 			BranchName:   ticket.BranchName,
@@ -329,6 +359,7 @@ type ticketNewResult struct {
 	Path         string `json:"path"`
 	Slug         string `json:"slug"`
 	Status       string `json:"status"`
+	Type         string `json:"type"`
 	ProjectID    string `json:"project_id"`
 	WorktreePath string `json:"worktree_path"`
 	BranchName   string `json:"branch_name"`
@@ -910,6 +941,8 @@ func init() {
 		"Initial status: backlog (default), next, in_progress, in_review, done, archived")
 	ticketNewCmd.Flags().StringVar(&ticketNewLabels, "labels", "",
 		"Comma-separated labels")
+	ticketNewCmd.Flags().StringVar(&ticketNewType, "type", "",
+		"Pipeline type: research, spec, implement, review (empty = freeform). Binds a specialized agent role at spawn; implement/review START is gated on a linked upstream")
 	ticketNewCmd.Flags().IntVar(&ticketNewPriority, "priority", 0,
 		"Priority 1-5 (0 = use default, which is 3)")
 	ticketNewCmd.Flags().BoolVar(&ticketNewNoWorktree, "no-worktree", false,
@@ -917,7 +950,7 @@ func init() {
 	ticketNewCmd.Flags().BoolVar(&ticketNewWorktree, "worktree", false,
 		"Provision the git worktree + branch now (not lazily at spawn) and print its path; contradicts --no-worktree")
 	ticketNewCmd.Flags().BoolVar(&ticketNewJSON, "json", false,
-		"Emit a JSON object {id, path, slug, status, project_id, worktree_path, branch_name, base_branch, blocked_by} instead of plain lines")
+		"Emit a JSON object {id, path, slug, status, type, project_id, worktree_path, branch_name, base_branch, blocked_by} instead of plain lines")
 	ticketNewCmd.Flags().BoolVar(&ticketNewAllowMigration, "allow-migration", false,
 		"Allow migrating legacy single-file ticket storage instead of refusing")
 	ticketNewCmd.Flags().StringVar(&ticketNewSession, "session", "",

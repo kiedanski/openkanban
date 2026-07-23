@@ -70,6 +70,39 @@ func ParseStatus(s string) (TicketStatus, error) {
 	}
 }
 
+// TicketType classifies a ticket by its stage in the
+// research → spec → implement → review pipeline. It is orthogonal to
+// Status: a ticket has both a Status (which column it sits in) and a Type
+// (which agent role spawns for it and which workflow gates apply). The
+// empty value is TypeFreeform — today's behavior, no role binding and no
+// gates — so tickets created before this field existed keep working.
+type TicketType string
+
+const (
+	TypeFreeform  TicketType = ""          // default; no role binding, no gates
+	TypeResearch  TicketType = "research"  // explore & report (findings.md)
+	TypeSpec      TicketType = "spec"      // produce a plan (plan.md)
+	TypeImplement TicketType = "implement" // write the code + open the PR
+	TypeReview    TicketType = "review"    // critique the diff (review.md)
+)
+
+// ParseTicketType converts a raw string to a TicketType, returning a
+// descriptive error for unrecognised values. The empty string is valid and
+// maps to TypeFreeform (backward-compat with tickets that predate the field);
+// the literal "freeform" is accepted as an alias so the CLI can name the same
+// option the TUI picker labels "Freeform". Mirrors ParseStatus; used to
+// validate the --type flag and .md frontmatter.
+func ParseTicketType(s string) (TicketType, error) {
+	switch TicketType(s) {
+	case TypeFreeform, TypeResearch, TypeSpec, TypeImplement, TypeReview:
+		return TicketType(s), nil
+	case "freeform":
+		return TypeFreeform, nil
+	default:
+		return "", fmt.Errorf("%q is not one of: research, spec, implement, review, freeform (or empty for freeform)", s)
+	}
+}
+
 type AgentStatus string
 
 const (
@@ -141,6 +174,10 @@ type Ticket struct {
 	Labels   []string          `json:"labels,omitempty"`
 	Priority int               `json:"priority,omitempty"`
 	Meta     map[string]string `json:"meta,omitempty"`
+
+	// Type is the ticket's pipeline stage (research/spec/implement/review).
+	// Empty = TypeFreeform (no role binding, no gates). See TicketType.
+	Type TicketType `json:"type,omitempty"`
 
 	// Dependencies - tickets that block this one (informational only, no enforcement)
 	BlockedBy []TicketID `json:"blocked_by,omitempty"`
