@@ -487,6 +487,7 @@ All keybindings are shown in-app with `?`. Custom keybindings coming soon.
 | `enter` | Attach to running agent |
 | `n` | Create new ticket (lands in the focused column; in_review/done route to in_progress) |
 | `e` | Edit ticket |
+| `E` | Edit ticket description in `$EDITOR` (vim); falls back to `vi` |
 | `s` | Spawn agent for ticket |
 | `S` | Stop agent |
 | `d` | Delete ticket |

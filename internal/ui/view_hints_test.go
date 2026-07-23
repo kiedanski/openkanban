@@ -84,12 +84,13 @@ func TestContextualHints_NormalDropOrder(t *testing.T) {
 	m := &Model{mode: ModeNormal}
 	fullW := lipgloss.Width(hintsAt(m, 1_000_000))
 
-	// Just under full width: only the lowest-prio hint (O settings) drops.
+	// Just under full width: only the lowest-prio hint (E $EDITOR, prio 0)
+	// drops; the next-lowest (O settings) now survives.
 	out := hintsAt(m, fullW-1)
-	if strings.Contains(out, "settings") {
-		t.Errorf("at fullW-1 'settings' (lowest prio) should drop: %q", out)
+	if strings.Contains(out, "EDITOR") {
+		t.Errorf("at fullW-1 'E $EDITOR' (lowest prio) should drop: %q", out)
 	}
-	for _, lbl := range []string{"sidebar", "search", "nav"} {
+	for _, lbl := range []string{"settings", "sidebar", "search", "nav"} {
 		if !strings.Contains(out, lbl) {
 			t.Errorf("at fullW-1 higher-prio %q should survive: %q", lbl, out)
 		}

@@ -943,6 +943,7 @@ func (m *Model) contextualHints(hintStyle lipgloss.Style, sep string, maxWidth i
 					{key: "S", label: "stop", prio: 8},
 					{key: "Space/-", label: "move", prio: 7},
 					{key: "e", label: "edit", prio: 6},
+					{key: "E", label: "$EDITOR", prio: 0},
 					{key: "d", label: "del", prio: 5},
 					{key: "K/J", label: "prio", prio: 4},
 					{key: "o", label: "sort", prio: 3},
@@ -965,6 +966,7 @@ func (m *Model) contextualHints(hintStyle lipgloss.Style, sep string, maxWidth i
 					{key: "Ctrl+Space", label: "bg agent", prio: 8},
 					{key: "Space/-", label: "move", prio: 7},
 					{key: "e", label: "edit", prio: 6},
+					{key: "E", label: "$EDITOR", prio: 0},
 					{key: "d", label: "del", prio: 5},
 					{key: "K/J", label: "prio", prio: 4},
 					{key: "o", label: "sort", prio: 3},
@@ -985,6 +987,7 @@ func (m *Model) contextualHints(hintStyle lipgloss.Style, sep string, maxWidth i
 			{key: "h/j/k/l", label: "nav", prio: 14},
 			{key: "n", label: "new", prio: 13},
 			{key: "e", label: "edit", prio: 12},
+			{key: "E", label: "$EDITOR", prio: 0},
 			{key: "d", label: "del", prio: 11},
 			{key: "Space/-", label: "move", prio: 10},
 			{key: "s", label: "spawn", prio: 9},
@@ -1145,7 +1148,8 @@ func (m *Model) renderHelp() string {
 		"  " + keyStyle.Render("g") + descStyle.Render("     Go to first ticket    ") + keyStyle.Render("d") + descStyle.Render("           Delete ticket") + "\n" +
 		"  " + keyStyle.Render("G") + descStyle.Render("     Go to last ticket     ") + keyStyle.Render("Space") + descStyle.Render("       Move forward") + "\n" +
 		"  " + keyStyle.Render(" ") + descStyle.Render("                            ") + keyStyle.Render("-/Backspace") + descStyle.Render(" Move backward") + "\n" +
-		"  " + keyStyle.Render(" ") + descStyle.Render("                            ") + keyStyle.Render("K/J") + descStyle.Render("         Raise/lower priority") + "\n\n" +
+		"  " + keyStyle.Render(" ") + descStyle.Render("                            ") + keyStyle.Render("K/J") + descStyle.Render("         Raise/lower priority") + "\n" +
+		"  " + keyStyle.Render(" ") + descStyle.Render("                            ") + keyStyle.Render("E") + descStyle.Render("           Edit body in $EDITOR") + "\n\n" +
 		sep + "\n" +
 		sectionStyle.Render("  📂 Sidebar") + "                    " + sectionStyle.Render("🤖 Agent") + "\n" +
 		sep + "\n" +

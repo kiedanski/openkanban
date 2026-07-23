@@ -1371,6 +1371,10 @@ func (m *Model) dispatchUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FsChangedMsg:
 		m.handleFsChanged(msg)
 		return m, nil
+
+	case editorFinishedMsg:
+		m.applyEditorResult(msg)
+		return m, nil
 	}
 
 	return m, nil
@@ -1523,6 +1527,8 @@ func (m *Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.createNewTicket()
 	case "e":
 		return m.editTicket()
+	case "E":
+		return m.editTicketBodyInEditor()
 	case "enter", "s":
 		// Single entry point: spawnAgent dispatches to spawn or
 		// re-attach based on the current pane state. Pre-consolidation,
