@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -628,6 +629,11 @@ func (p *Pane) StartHeadless(command string, args []string, extraEnv []string) e
 	p.cmd = exec.Command(command, args...)
 	p.cmd.Env = buildCleanEnv(p.sessionName, p.ticketID)
 	if len(extraEnv) > 0 {
+		// extraEnv is appended AFTER buildCleanEnv, so a duplicate key here
+		// can shadow the clean value. In particular it must NOT carry PATH:
+		// that would defeat buildCleanEnv's self-binary PATH injection. No
+		// production caller sets PATH (buildSpawnReq only emits OPENKANBAN_*,
+		// per-agent env, and a --model flag); keep it that way.
 		p.cmd.Env = append(p.cmd.Env, extraEnv...)
 	}
 
@@ -1934,8 +1940,73 @@ func (p *Pane) contentLocked() string {
 // --- Rendering (Issue #14) ---
 
 
+// selfExecutable resolves the path of the currently-running binary. It is a
+// package var only so tests can substitute a deterministic path; production
+// code always uses os.Executable.
+var selfExecutable = os.Executable
+
+// openkanbanSelfBin returns the directory and full path of the currently-
+// running openkanban binary (symlinks resolved). Both are "" when the
+// executable can't be determined — callers then skip the PATH/OPENKANBAN_BIN
+// injection and leave the inherited PATH untouched.
+//
+// buildCleanEnv runs inside openkanbankd, so this is the same build that owns
+// the board: putting its directory first on the spawned agent's PATH makes a
+// bare `openkanban ...` invocation resolve to it, not to a stale/older
+// `openkanban` earlier on the user's PATH (e.g. a Homebrew/upstream install
+// that predates the `ticket` subcommand).
+func openkanbanSelfBin() (dir, path string) {
+	exe, err := selfExecutable()
+	if err != nil || exe == "" {
+		return "", ""
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil && resolved != "" {
+		exe = resolved
+	}
+	return filepath.Dir(exe), exe
+}
+
+// selfBinResolves reports whether a bare `openkanban` on the inherited PATH
+// already resolves to binPath (symlinks resolved). buildCleanEnv uses this to
+// keep the PATH injection surgical: when this build is already the one a
+// spawned agent would find, leave PATH untouched rather than reorder it.
+func selfBinResolves(binPath string) bool {
+	if binPath == "" {
+		return false
+	}
+	p, err := exec.LookPath("openkanban")
+	if err != nil {
+		return false
+	}
+	if resolved, rerr := filepath.EvalSymlinks(p); rerr == nil && resolved != "" {
+		p = resolved
+	}
+	return p == binPath
+}
+
 func buildCleanEnv(sessionName, ticketID string) []string {
+	// Resolve our own binary up front so we can front-load its directory onto
+	// the spawned agent's PATH (see openkanbanSelfBin). Skills that create
+	// sibling tickets (spin-off-a-ticket, fan-out-a-plan) shell out to
+	// `openkanban ticket new`; without this the non-interactive agent shell
+	// would resolve `openkanban` to whatever the daemon inherited — which for
+	// a user who installed a release via Homebrew and runs the fork through a
+	// shell alias is a stale binary with no `ticket` command.
+	binDir, binPath := openkanbanSelfBin()
+	// Only rewrite PATH when a bare `openkanban` would NOT already resolve to
+	// this build — i.e. an older/other `openkanban` shadows us, or none is on
+	// PATH. This keeps the common single-install case a no-op (no PATH
+	// reordering) and acts only for the split-install case this fixes: a stale
+	// Homebrew/upstream `openkanban` on PATH while the fork build runs the
+	// board. When it does inject, the directory is typically a dedicated one
+	// (e.g. the app bundle or a GOBIN), so the reordering is benign.
+	injectDir := ""
+	if binDir != "" && !selfBinResolves(binPath) {
+		injectDir = binDir
+	}
+
 	var env []string
+	pathSeen := false
 	for _, e := range os.Environ() {
 		key := strings.Split(e, "=")[0]
 		if key == "OPENCODE" || strings.HasPrefix(key, "OPENCODE_") {
@@ -1954,12 +2025,31 @@ func buildCleanEnv(sessionName, ticketID string) []string {
 		// session + ticket id configured for THIS pane and nothing else.
 		// Without this, nesting openkanban inside an openkanban-spawned
 		// shell would leak the outer pane's identity into the inner child.
+		// (OPENKANBAN_BIN is re-synthesized fresh below for the same reason.)
 		if strings.HasPrefix(key, "OPENKANBAN_") {
 			continue
 		}
+		if key == "PATH" {
+			pathSeen = true
+			if injectDir != "" {
+				// Prepend our binary's directory so `openkanban` resolves to
+				// the build running the board, not a stale one earlier on PATH.
+				env = append(env, "PATH="+injectDir+string(os.PathListSeparator)+strings.TrimPrefix(e, "PATH="))
+				continue
+			}
+		}
 		env = append(env, e)
 	}
+	// If the inherited env had no PATH at all, still make our binary findable.
+	if injectDir != "" && !pathSeen {
+		env = append(env, "PATH="+injectDir)
+	}
 	env = append(env, "TERM=xterm-256color")
+	// Explicit pointer to the running build so a script/skill can prefer it
+	// over PATH resolution if it wants to be certain which openkanban it runs.
+	if binPath != "" {
+		env = append(env, "OPENKANBAN_BIN="+binPath)
+	}
 	if sessionName != "" {
 		env = append(env, "OPENKANBAN_SESSION="+sessionName)
 	}

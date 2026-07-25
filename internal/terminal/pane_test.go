@@ -2,6 +2,9 @@ package terminal
 
 import (
 	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -520,15 +523,177 @@ func TestBuildCleanEnv_StripsInheritedOpenkanban(t *testing.T) {
 		}
 	}
 	// And no other OPENKANBAN_* (e.g. OPENKANBAN_PTY_DEBUG_LOG) should
-	// have survived the strip.
+	// have survived the strip. OPENKANBAN_BIN is exempt: it is synthesized
+	// fresh by buildCleanEnv (like SESSION/TICKET_ID), not inherited.
 	for _, e := range env {
 		if strings.HasPrefix(e, "OPENKANBAN_") &&
 			!strings.HasPrefix(e, "OPENKANBAN_SESSION=") &&
-			!strings.HasPrefix(e, "OPENKANBAN_TICKET_ID=") {
+			!strings.HasPrefix(e, "OPENKANBAN_TICKET_ID=") &&
+			!strings.HasPrefix(e, "OPENKANBAN_BIN=") {
 			t.Errorf("unexpected inherited OPENKANBAN_* survived strip: %q", e)
 		}
 	}
 	if anyWithPrefix("OPENKANBAN_PTY_DEBUG_LOG") {
 		t.Errorf("OPENKANBAN_PTY_DEBUG_LOG should have been stripped; env=%v", env)
+	}
+}
+
+// TestBuildCleanEnv_InjectsSelfBinOntoPath verifies buildCleanEnv front-loads
+// the running openkanban binary's directory onto the spawned agent's PATH and
+// exports OPENKANBAN_BIN. This is the fix for the "unknown command \"ticket\""
+// failure: a spawned agent's non-interactive shell must resolve `openkanban`
+// to the same build that owns the board (which has `ticket new`), not to a
+// stale binary earlier on the user's PATH.
+func TestBuildCleanEnv_InjectsSelfBinOntoPath(t *testing.T) {
+	const fakeExe = "/opt/okb-selftest/bin/openkanban"
+	orig := selfExecutable
+	selfExecutable = func() (string, error) { return fakeExe, nil }
+	t.Cleanup(func() { selfExecutable = orig })
+
+	t.Setenv("PATH", "/usr/bin:/bin")
+	env := buildCleanEnv("task/foo", "abc-123")
+
+	get := func(key string) (string, bool) {
+		for _, e := range env {
+			if strings.HasPrefix(e, key+"=") {
+				return strings.TrimPrefix(e, key+"="), true
+			}
+		}
+		return "", false
+	}
+
+	wantDir := filepath.Dir(fakeExe) // "/opt/okb-selftest/bin"
+	gotPath, ok := get("PATH")
+	if !ok {
+		t.Fatalf("PATH missing from env; env=%v", env)
+	}
+	wantPath := wantDir + string(os.PathListSeparator) + "/usr/bin:/bin"
+	if gotPath != wantPath {
+		t.Errorf("PATH = %q, want %q", gotPath, wantPath)
+	}
+
+	// Exactly one PATH entry — a duplicate makes resolution order ambiguous
+	// across libc implementations.
+	pathCount := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			pathCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Errorf("expected exactly one PATH entry, got %d; env=%v", pathCount, env)
+	}
+
+	if gotBin, ok := get("OPENKANBAN_BIN"); !ok || gotBin != fakeExe {
+		t.Errorf("OPENKANBAN_BIN = %q (present=%v), want %q", gotBin, ok, fakeExe)
+	}
+}
+
+// TestBuildCleanEnv_SelfBinUnresolvableLeavesPath verifies that when the
+// running binary can't be resolved, buildCleanEnv leaves PATH untouched and
+// omits OPENKANBAN_BIN rather than corrupting the agent's PATH.
+func TestBuildCleanEnv_SelfBinUnresolvableLeavesPath(t *testing.T) {
+	orig := selfExecutable
+	selfExecutable = func() (string, error) { return "", fmt.Errorf("boom") }
+	t.Cleanup(func() { selfExecutable = orig })
+
+	t.Setenv("PATH", "/usr/bin:/bin")
+	env := buildCleanEnv("task/foo", "abc-123")
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "OPENKANBAN_BIN=") {
+			t.Errorf("OPENKANBAN_BIN must be absent when self-resolution fails; got %q", e)
+		}
+		if strings.HasPrefix(e, "PATH=") && e != "PATH=/usr/bin:/bin" {
+			t.Errorf("PATH must be untouched when self-resolution fails; got %q", e)
+		}
+	}
+}
+
+// TestBuildCleanEnv_SkipsInjectWhenSelfAlreadyOnPath verifies buildCleanEnv
+// does NOT touch PATH when a bare `openkanban` already resolves to this build
+// — the single-install case must stay a no-op (no reorder, no duplicate),
+// while OPENKANBAN_BIN is still exported.
+func TestBuildCleanEnv_SkipsInjectWhenSelfAlreadyOnPath(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "openkanban")
+	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolvedExe := exe
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		resolvedExe = r
+	}
+
+	orig := selfExecutable
+	selfExecutable = func() (string, error) { return exe, nil }
+	t.Cleanup(func() { selfExecutable = orig })
+
+	// Put our temp dir on PATH so `openkanban` already resolves to us.
+	inheritedPath := dir + string(os.PathListSeparator) + "/usr/bin"
+	t.Setenv("PATH", inheritedPath)
+	env := buildCleanEnv("task/foo", "abc-123")
+
+	var gotPath string
+	pathCount := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			gotPath = strings.TrimPrefix(e, "PATH=")
+			pathCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Fatalf("expected exactly one PATH entry, got %d; env=%v", pathCount, env)
+	}
+	if gotPath != inheritedPath {
+		t.Errorf("PATH = %q, want it left unchanged %q", gotPath, inheritedPath)
+	}
+	// OPENKANBAN_BIN is still exported (points at the resolved self).
+	found := false
+	for _, e := range env {
+		if e == "OPENKANBAN_BIN="+resolvedExe {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("OPENKANBAN_BIN=%q not found; env=%v", resolvedExe, env)
+	}
+}
+
+// TestBuildCleanEnv_AddsPathWhenInheritedEnvHasNone covers the fallback branch:
+// when the inherited env carries no PATH at all, buildCleanEnv still adds
+// PATH=<self bin dir> so the injected openkanban stays findable.
+func TestBuildCleanEnv_AddsPathWhenInheritedEnvHasNone(t *testing.T) {
+	const fakeExe = "/opt/okb-selftest/bin/openkanban"
+	orig := selfExecutable
+	selfExecutable = func() (string, error) { return fakeExe, nil }
+	t.Cleanup(func() { selfExecutable = orig })
+
+	// Remove PATH from the process env for the duration of this test. (t.Setenv
+	// can only set, not unset, so do it directly with a guarded restore.)
+	savedPath, hadPath := os.LookupEnv("PATH")
+	os.Unsetenv("PATH")
+	t.Cleanup(func() {
+		if hadPath {
+			os.Setenv("PATH", savedPath)
+		}
+	})
+
+	env := buildCleanEnv("task/foo", "abc-123")
+
+	wantDir := filepath.Dir(fakeExe)
+	var gotPath string
+	pathCount := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			gotPath = strings.TrimPrefix(e, "PATH=")
+			pathCount++
+		}
+	}
+	if pathCount != 1 {
+		t.Fatalf("expected exactly one PATH entry, got %d; env=%v", pathCount, env)
+	}
+	if gotPath != wantDir {
+		t.Errorf("PATH = %q, want bare self-bin dir %q", gotPath, wantDir)
 	}
 }

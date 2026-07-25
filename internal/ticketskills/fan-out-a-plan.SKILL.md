@@ -38,20 +38,23 @@ brief, and which earlier task(s) it depends on. **Confirm the list with the user
 before creating anything** — creating N tickets is not free to undo.
 
 ### Step 2: Create tickets in dependency order, capturing ids
-Create upstream tasks FIRST so their ids exist to reference. For each task, write
-its brief to a temp file, then:
+Create upstream tasks FIRST so their ids exist to reference. Invoke openkanban via
+`"${OPENKANBAN_BIN:-openkanban}"` — `$OPENKANBAN_BIN` is the exact build running the
+board (the daemon sets it on every spawned session), so a stale/other `openkanban`
+earlier on PATH can't shadow it and reject `ticket`. For each task, write its brief
+to a temp file, then:
 
 ```bash
 # First task (no dependency):
-A=$(openkanban ticket new --title "Research the auth flow" \
+A=$("${OPENKANBAN_BIN:-openkanban}" ticket new --title "Research the auth flow" \
       --description-file /tmp/okb-plan-1.md --json | jq -r .id)
 
 # A task that depends on A:
-B=$(openkanban ticket new --title "Implement OAuth callback" \
+B=$("${OPENKANBAN_BIN:-openkanban}" ticket new --title "Implement OAuth callback" \
       --description-file /tmp/okb-plan-2.md --blocked-by "$A" --json | jq -r .id)
 
 # A task with multiple upstreams (comma-separated):
-openkanban ticket new --title "Review the change" \
+"${OPENKANBAN_BIN:-openkanban}" ticket new --title "Review the change" \
   --description-file /tmp/okb-plan-3.md --blocked-by "$A,$B" --json
 ```
 
@@ -66,6 +69,10 @@ and what it's blocked by. Do NOT start any of them — the user starts tickets w
 ready, and the dependency links are there to signal the order.
 
 ## Notes
+- Prefer `"${OPENKANBAN_BIN:-openkanban}"` over a bare `openkanban`: `$OPENKANBAN_BIN`
+  is the absolute path to the build running the board, so you never hit a stale
+  `openkanban` on PATH that lacks the `ticket` command. It falls back to
+  `openkanban` when unset (e.g. outside a spawned session).
 - Keep each brief self-contained: goal, relevant files, decisions, out-of-scope,
   and an acceptance step that ends in a runnable check.
 - If `jq` isn't available, capture the full `--json` object and read its `id` field.
