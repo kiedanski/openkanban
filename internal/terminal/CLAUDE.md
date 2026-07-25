@@ -73,8 +73,32 @@ BubbleTea integration:
 
 `buildCleanEnv()`:
 - Sets `TERM=xterm-256color`
-- Strips agent-related env vars
-- Preserves PATH, HOME, USER
+- Strips agent-related env vars (`OPENCODE*`/`CLAUDE*`/`GEMINI*`/`CODEX*`, and any inherited `OPENKANBAN_*`)
+- Synthesizes `OPENKANBAN_SESSION` / `OPENKANBAN_TICKET_ID` for THIS pane
+- Preserves HOME, USER
+
+### Self-binary PATH injection (`openkanbanSelfBin` / `selfBinResolves`)
+
+`buildCleanEnv` runs inside `openkanbankd`, so `os.Executable()` is the build
+that owns the board. It front-loads that binary's **directory** onto the spawned
+agent's `PATH` and exports `OPENKANBAN_BIN=<full path>`, so a bare
+`openkanban …` in the agent's **non-interactive** shell (e.g. the
+`spin-off-a-ticket` / `fan-out-a-plan` skills' `openkanban ticket new`) resolves
+to the same build — not to a stale/older `openkanban` earlier on the user's
+PATH. This is the fix for the `unknown command "ticket"` failure a
+Homebrew-release-plus-`okb`-shell-alias split produced (the release binary
+predated the `ticket` subcommand; the alias is invisible to the Bash tool).
+
+The injection is **surgical, not unconditional**: `selfBinResolves(binPath)`
+runs `exec.LookPath("openkanban")` against the inherited PATH and, if it already
+resolves to this build, PATH is left untouched (no reorder, no duplicate). So a
+single-install setup is a no-op; only the shadowed/split-install case rewrites
+PATH. `OPENKANBAN_BIN` is always exported when the self-binary is resolvable
+(it's synthesized fresh, hence exempt from the `OPENKANBAN_*` strip). Both
+helpers fail safe: an unresolvable `os.Executable()` leaves PATH as inherited
+and omits `OPENKANBAN_BIN`. `selfExecutable` is a package var so tests can pin a
+deterministic path (`TestBuildCleanEnv_InjectsSelfBinOntoPath` /
+`…_SkipsInjectWhenSelfAlreadyOnPath` / `…_SelfBinUnresolvableLeavesPath`).
 
 ## Escape Sequence Detection
 
