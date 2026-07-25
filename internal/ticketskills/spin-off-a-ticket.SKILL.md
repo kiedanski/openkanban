@@ -65,15 +65,19 @@ Write a self-contained brief to a temp file, e.g. `/tmp/okb-spinoff-<short>.md`:
 - **Acceptance** — how to know it's done, ending with a runnable check (build/test/command).
 
 ### Step 4: Create the ticket
-Run from inside the session (project + parent ticket are derived from the env):
+Run from inside the session (project + parent ticket are derived from the env).
+Invoke openkanban via `"${OPENKANBAN_BIN:-openkanban}"` — `$OPENKANBAN_BIN` is
+the exact build running the board (the daemon sets it on every spawned session),
+so a stale/other `openkanban` earlier on your PATH can't shadow it and reject
+`ticket`:
 
 ```bash
 # New worktree (provisioned lazily when the ticket is started):
-openkanban ticket new --title "<title>" \
+"${OPENKANBAN_BIN:-openkanban}" ticket new --title "<title>" \
   --description-file /tmp/okb-spinoff-<short>.md --json
 
 # OR continue in THIS worktree/branch (sequential phase):
-openkanban ticket new --title "<title>" \
+"${OPENKANBAN_BIN:-openkanban}" ticket new --title "<title>" \
   --description-file /tmp/okb-spinoff-<short>.md \
   --worktree-from "$OPENKANBAN_TICKET_ID" --json
 ```
@@ -86,6 +90,10 @@ for them to start when ready. Do NOT spawn or start it yourself — the user
 decides when a ticket goes in progress.
 
 ## Notes
+- Prefer `"${OPENKANBAN_BIN:-openkanban}"` over a bare `openkanban`: `$OPENKANBAN_BIN`
+  is the absolute path to the build running the board, so you never hit a stale
+  `openkanban` on PATH that lacks the `ticket` command. It falls back to
+  `openkanban` when unset (e.g. outside a spawned session).
 - `--project` is derived from `$OPENKANBAN_TICKET_ID`; you don't need the project name.
 - To link this new ticket after an existing one (a dependency), add
   `--blocked-by "<other-ticket-id>"`.
